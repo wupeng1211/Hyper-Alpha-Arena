@@ -299,6 +299,23 @@ def on_startup():
     except Exception as e:
         print(f"✗ Failed to load global sampling config: {e}")
 
+    # Clean up any leftover backfill tasks from previous runs
+    try:
+        from database.models import KlineCollectionTask
+        db = SessionLocal()
+        try:
+            # Delete all running and pending backfill tasks
+            deleted_count = db.query(KlineCollectionTask).filter(
+                KlineCollectionTask.status.in_(['running', 'pending'])
+            ).delete(synchronize_session=False)
+            db.commit()
+            if deleted_count > 0:
+                print(f"✓ Cleaned up {deleted_count} leftover backfill tasks")
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"⚠ Failed to clean up backfill tasks: {e}")
+
     # Initialize all services (scheduler, market data tasks, auto trading, etc.)
     print("About to initialize services...")
     from services.startup import initialize_services

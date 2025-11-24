@@ -9,7 +9,7 @@ COPY frontend/ ./
 RUN pnpm build
 
 # Python backend stage
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -27,7 +27,7 @@ WORKDIR /app/backend
 RUN pip install --no-cache-dir -e .
 
 # Copy built frontend
-COPY --from=frontend-builder /app/frontend/dist ./static/
+COPY --from=frontend-builder /app/frontend/dist /app/backend/static/
 
 # Expose port
 EXPOSE 8802

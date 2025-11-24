@@ -70,6 +70,96 @@ class HyperliquidClient:
             logger.error(f"Error fetching price for {symbol}: {e}")
             return None
 
+    def get_ticker_data(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get complete ticker data using Hyperliquid native API"""
+        try:
+            import requests
+
+            # Use Hyperliquid native API for complete market data
+            response = requests.post(
+                "https://api.hyperliquid.xyz/info",
+                json={"type": "metaAndAssetCtxs"},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if not isinstance(data, list) or len(data) < 2:
+                raise Exception("Invalid API response structure")
+
+            # Find symbol index in universe (meta data)
+            symbol_upper = symbol.upper()
+            symbol_index = None
+
+            if isinstance(data[0], dict) and 'universe' in data[0]:
+                for i, asset_meta in enumerate(data[0]['universe']):
+                    if isinstance(asset_meta, dict):
+                        asset_name = asset_meta.get('name', '').upper()
+                        if asset_name == symbol_upper or asset_name == symbol_upper.replace('/', ''):
+                            symbol_index = i
+                            break
+
+            if symbol_index is None or symbol_index >= len(data[1]):
+                # Fallback to CCXT for unsupported symbols
+                return self._get_ccxt_ticker_fallback(symbol)
+
+            # Get asset data by index
+            asset_data = data[1][symbol_index]
+            if not isinstance(asset_data, dict):
+                return self._get_ccxt_ticker_fallback(symbol)
+
+            # Extract data from Hyperliquid API
+            mark_px = float(asset_data.get('markPx', 0))
+            oracle_px = float(asset_data.get('oraclePx', 0))
+            prev_day_px = float(asset_data.get('prevDayPx', 0))
+            day_ntl_vlm = float(asset_data.get('dayNtlVlm', 0))
+            open_interest = float(asset_data.get('openInterest', 0))
+            funding_rate = float(asset_data.get('funding', 0))
+
+            # Calculate 24h change
+            change_24h = mark_px - prev_day_px if prev_day_px else 0
+            percentage_24h = (change_24h / prev_day_px * 100) if prev_day_px else 0
+
+            result = {
+                'symbol': symbol,
+                'price': mark_px,
+                'oracle_price': oracle_px,
+                'change24h': change_24h,
+                'volume24h': day_ntl_vlm,
+                'percentage24h': percentage_24h,
+                'open_interest': open_interest,
+                'funding_rate': funding_rate,
+            }
+
+            logger.info(f"Got Hyperliquid ticker for {symbol}: price={result['price']}, change24h={result['change24h']:.2f}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching Hyperliquid ticker for {symbol}: {e}")
+            # Fallback to CCXT
+            return self._get_ccxt_ticker_fallback(symbol)
+
+    def _get_ccxt_ticker_fallback(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Fallback to CCXT ticker for unsupported symbols"""
+        try:
+            if not self.exchange:
+                self._initialize_exchange()
+
+            formatted_symbol = self._format_symbol(symbol)
+            ticker = self.exchange.fetch_ticker(formatted_symbol)
+
+            result = {
+                'symbol': symbol,
+                'price': float(ticker['last']) if ticker['last'] else 0,
+                'change24h': float(ticker['change']) if ticker['change'] else 0,
+                'volume24h': float(ticker['baseVolume']) if ticker['baseVolume'] else 0,
+                'percentage24h': float(ticker['percentage']) if ticker['percentage'] else 0,
+            }
+            return result
+        except Exception as e:
+            logger.error(f"CCXT fallback failed for {symbol}: {e}")
+            return None
+
     def check_symbol_tradability(self, symbol: str) -> bool:
         """
         Check if a symbol is tradable (can fetch price data).
@@ -298,3 +388,8 @@ def get_market_status_from_hyperliquid(symbol: str) -> Dict[str, Any]:
 def get_all_symbols_from_hyperliquid() -> List[str]:
     """Get all available symbols from Hyperliquid"""
     return hyperliquid_client.get_all_symbols()
+
+
+def get_ticker_data_from_hyperliquid(symbol: str) -> Optional[Dict[str, Any]]:
+    """Get complete ticker data from Hyperliquid"""
+    return hyperliquid_client.get_ticker_data(symbol)

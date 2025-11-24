@@ -5,6 +5,7 @@ from .hyperliquid_market_data import (
     get_kline_data_from_hyperliquid,
     get_market_status_from_hyperliquid,
     get_all_symbols_from_hyperliquid,
+    get_ticker_data_from_hyperliquid,
     hyperliquid_client,
 )
 
@@ -71,3 +72,35 @@ def get_all_symbols() -> List[str]:
     except Exception as hl_err:
         logger.error(f"Failed to get trading pairs list: {hl_err}")
         return ['BTC/USD', 'ETH/USD', 'SOL/USD']  # default trading pairs
+
+
+def get_ticker_data(symbol: str, market: str = "CRYPTO") -> Dict[str, Any]:
+    """Get complete ticker data including 24h change and volume"""
+    key = f"{symbol}.{market}"
+    logger.info(f"[DEBUG] get_ticker_data called for {key}")
+
+    try:
+        logger.info(f"[DEBUG] Calling get_ticker_data_from_hyperliquid for {symbol}")
+        ticker_data = get_ticker_data_from_hyperliquid(symbol)
+        logger.info(f"[DEBUG] get_ticker_data_from_hyperliquid returned: {ticker_data}")
+        if ticker_data:
+            logger.info(f"Got ticker data for {key}: price={ticker_data['price']}, change24h={ticker_data['change24h']}")
+            return ticker_data
+        raise Exception("Hyperliquid returned empty ticker data")
+    except Exception as hl_err:
+        logger.error(f"Failed to get ticker data from Hyperliquid: {hl_err}")
+        # Fallback to price-only data
+        logger.info(f"[DEBUG] Falling back to price-only data for {key}")
+        try:
+            price = get_last_price(symbol, market)
+            fallback_data = {
+                'symbol': symbol,
+                'price': price,
+                'change24h': 0,
+                'volume24h': 0,
+                'percentage24h': 0,
+            }
+            logger.info(f"[DEBUG] Returning fallback data for {key}: {fallback_data}")
+            return fallback_data
+        except Exception:
+            raise Exception(f"Unable to get ticker data for {key}: {hl_err}")

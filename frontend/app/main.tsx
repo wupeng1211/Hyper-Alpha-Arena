@@ -539,7 +539,7 @@ function App() {
     }
 
     return (
-      <main className="flex-1 p-4 overflow-hidden flex flex-col min-h-0">
+      <main className="flex-1 p-4 overflow-hidden flex flex-col min-h-0 min-w-0">
 
         {currentPage === 'comprehensive' && (
           tradingMode === 'paper' ? (
@@ -607,7 +607,7 @@ function App() {
         onPageChange={setCurrentPage}
         onAccountUpdated={handleAccountUpdated}
       />
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         <Header
           title={pageTitle}
           currentAccount={account}

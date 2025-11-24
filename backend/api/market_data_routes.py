@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import logging
 
-from services.market_data import get_last_price, get_kline_data, get_market_status
+from services.market_data import get_last_price, get_kline_data, get_market_status, get_ticker_data
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,12 @@ class PriceResponse(BaseModel):
     symbol: str
     market: str
     price: float
+    oracle_price: Optional[float] = 0
+    change24h: Optional[float] = 0
+    volume24h: Optional[float] = 0
+    percentage24h: Optional[float] = 0
+    open_interest: Optional[float] = 0
+    funding_rate: Optional[float] = 0
     timestamp: int
 
 
@@ -68,13 +74,19 @@ async def get_crypto_price(symbol: str, market: str = "US"):
         Response containing latest price
     """
     try:
-        price = get_last_price(symbol, market)
-        
+        ticker_data = get_ticker_data(symbol, market)
+
         import time
         return PriceResponse(
-            symbol=symbol,
+            symbol=ticker_data['symbol'],
             market=market,
-            price=price,
+            price=ticker_data['price'],
+            oracle_price=ticker_data.get('oracle_price', 0),
+            change24h=ticker_data['change24h'],
+            volume24h=ticker_data['volume24h'],
+            percentage24h=ticker_data['percentage24h'],
+            open_interest=ticker_data.get('open_interest', 0),
+            funding_rate=ticker_data.get('funding_rate', 0),
             timestamp=int(time.time() * 1000)
         )
     except Exception as e:
@@ -105,15 +117,21 @@ async def get_multiple_prices(symbols: str, market: str = "hyperliquid"):
         
         for symbol in symbol_list:
             try:
-                price = get_last_price(symbol, market)
+                ticker_data = get_ticker_data(symbol, market)
                 results.append(PriceResponse(
-                    symbol=symbol,
+                    symbol=ticker_data['symbol'],
                     market=market,
-                    price=price,
+                    price=ticker_data['price'],
+                    oracle_price=ticker_data.get('oracle_price', 0),
+                    change24h=ticker_data['change24h'],
+                    volume24h=ticker_data['volume24h'],
+                    percentage24h=ticker_data['percentage24h'],
+                    open_interest=ticker_data.get('open_interest', 0),
+                    funding_rate=ticker_data.get('funding_rate', 0),
                     timestamp=current_timestamp
                 ))
             except Exception as e:
-                logger.warning(f"Failed to get {symbol} price: {e}")
+                logger.warning(f"Failed to get {symbol} ticker data: {e}")
                 # Continue processing other cryptos without interrupting the entire request
                 
         return results
@@ -252,3 +270,114 @@ async def market_data_health():
             "error": str(e),
             "message": "Market data service abnormal"
         }
+
+class KlineWithIndicatorsResponse(BaseModel):
+    """K线数据+技术指标响应模型"""
+    symbol: str
+    market: str
+    period: str
+    count: int
+    klines: List[KlineItem]
+    indicators: Dict[str, Any]
+
+
+@router.get("/kline-with-indicators/{symbol}", response_model=KlineWithIndicatorsResponse)
+async def get_kline_with_indicators(
+    symbol: str,
+    market: str = "hyperliquid",
+    period: str = "1h",
+    count: int = 500,
+    indicators: str = ""
+):
+    """
+    获取K线数据并计算技术指标
+
+    Args:
+        symbol: 币种符号，如 'BTC'
+        market: 市场，默认 'hyperliquid'
+        period: 时间周期，如 '1h'
+        count: 数据数量，默认500
+        indicators: 指标列表，逗号分隔，如 'EMA20,EMA50,MACD,RSI14'
+
+    Returns:
+        包含K线数据和技术指标的响应
+    """
+    try:
+        from services.technical_indicators import calculate_indicators
+
+        # 参数验证
+        valid_periods = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1M']
+        if period not in valid_periods:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的时间周期，支持的周期: {', '.join(valid_periods)}"
+            )
+
+        if count <= 0 or count > 500:
+            raise HTTPException(status_code=400, detail="数据数量必须在1-500之间")
+
+        # 获取K线数据
+        kline_data = get_kline_data(symbol, market, period, count)
+
+        # 转换K线数据格式
+        kline_items = []
+        for item in kline_data:
+            dt_value = item.get('datetime')
+            if dt_value is not None:
+                dt_str = dt_value.isoformat() if hasattr(dt_value, 'isoformat') else str(dt_value)
+            else:
+                dt_str = None
+
+            kline_items.append(KlineItem(
+                timestamp=item.get('timestamp'),
+                datetime=dt_str,
+                open=item.get('open'),
+                high=item.get('high'),
+                low=item.get('low'),
+                close=item.get('close'),
+                volume=item.get('volume'),
+                amount=item.get('amount'),
+                chg=item.get('chg'),
+                percent=item.get('percent')
+            ))
+
+        # 计算技术指标
+        indicator_results = {}
+        if indicators.strip():
+            indicator_list = [ind.strip() for ind in indicators.split(',') if ind.strip()]
+            if indicator_list:
+                indicator_results = calculate_indicators(kline_data, indicator_list)
+
+        return KlineWithIndicatorsResponse(
+            symbol=symbol,
+            market=market,
+            period=period,
+            count=len(kline_items),
+            klines=kline_items,
+            indicators=indicator_results
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取K线和指标数据失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取K线和指标数据失败: {str(e)}")
+
+
+@router.get("/indicators/available")
+async def get_available_indicators():
+    """
+    获取支持的技术指标列表
+
+    Returns:
+        支持的指标列表
+    """
+    try:
+        from services.technical_indicators import get_available_indicators
+        return {
+            "indicators": get_available_indicators(),
+            "message": "支持的技术指标列表"
+        }
+    except Exception as e:
+        logger.error(f"获取指标列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取指标列表失败: {str(e)}")
