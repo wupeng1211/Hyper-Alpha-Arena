@@ -138,6 +138,67 @@ FIELD TYPE REQUIREMENTS:
 - trading_strategy: string providing deeper context, including risk management and exit logic
 """
 
+# K-line AI Analysis prompt template for chart insights
+KLINE_ANALYSIS_PROMPT_TEMPLATE = """You are an expert technical analyst and trading advisor. Analyze the following K-line chart data and technical indicators to provide actionable trading insights.
+
+=== ANALYSIS CONTEXT ===
+Symbol: {symbol}
+Timeframe: {period}
+Analysis Time (UTC): {current_time_utc}
+
+=== CURRENT MARKET DATA ===
+Current Price: ${current_price}
+24h Change: {change_24h}%
+24h Volume: ${volume_24h}
+Open Interest: ${open_interest}
+Funding Rate: {funding_rate}%
+
+=== K-LINE DATA (Recent {kline_count} candles) ===
+{klines_summary}
+
+=== TECHNICAL INDICATORS ===
+{indicators_summary}
+
+=== POSITIONS ===
+{positions_summary}
+
+=== USER QUESTION (if provided) ===
+{user_message}
+
+=== ANALYSIS REQUIREMENTS ===
+Please provide a comprehensive analysis in **Markdown format** with the following sections:
+
+## 📊 Trend Analysis
+- Identify the current trend direction (bullish/bearish/sideways)
+- Explain the trend strength based on indicators
+- Note any trend reversal signals
+
+## 🎯 Key Price Levels
+- Support levels (where price may bounce)
+- Resistance levels (where price may face selling pressure)
+- Critical breakout/breakdown levels to watch
+
+## 📈 Technical Signals
+- Interpret the current indicator readings (MA, RSI, MACD, etc.)
+- Identify any bullish or bearish signals
+- Note divergences or confirmations between indicators
+
+## 💡 Trading Suggestions
+- Recommended action: Long / Short / Wait
+- Entry zone (if applicable)
+- Stop-loss level
+- Take-profit targets
+
+## ⚠️ Risk Warnings
+- Current volatility assessment
+- Key risks to monitor
+- Events or levels that would invalidate the analysis
+
+{additional_instructions}
+
+**Important**: Base your analysis solely on the provided data. Be objective and include both bullish and bearish scenarios where applicable.
+"""
+
 # Hyperliquid-specific prompt template for perpetual contract trading
 HYPERLIQUID_PROMPT_TEMPLATE = """=== SESSION CONTEXT ===
 Runtime: {runtime_minutes} minutes since trading started

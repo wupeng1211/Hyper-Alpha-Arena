@@ -11,11 +11,23 @@ interface TradingViewChartProps {
   onLoadingChange: (loading: boolean) => void
   data?: any[]
   onLoadMore?: () => void
+  onDataUpdate?: (klines: any[], indicators: any) => void
+  onIndicatorLoadingChange?: (loading: boolean) => void
 }
 
 type ChartType = 'candlestick' | 'line' | 'area'
 
-export default function TradingViewChart({ symbol, period, chartType, selectedIndicators, onLoadingChange, data = [], onLoadMore }: TradingViewChartProps) {
+export default function TradingViewChart({
+  symbol,
+  period,
+  chartType,
+  selectedIndicators,
+  onLoadingChange,
+  data = [],
+  onLoadMore,
+  onDataUpdate,
+  onIndicatorLoadingChange
+}: TradingViewChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<any>(null)
   const seriesRef = useRef<any>(null)
@@ -903,13 +915,11 @@ export default function TradingViewChart({ symbol, period, chartType, selectedIn
     if (loading) return
 
     setLoading(true)
+    onIndicatorLoadingChange?.(true)
     onLoadingChange(true)
     try {
-      // 获取需要请求的指标
-      const indicatorsToFetch = forceAllIndicators
-        ? selectedIndicators
-        : selectedIndicators.filter(ind => !cachedIndicators.includes(ind) || !indicatorData[ind])
-
+      // 始终请求当前选中的指标，避免缓存缺失
+      const indicatorsToFetch = selectedIndicators
       const indicatorsParam = indicatorsToFetch.length > 0 ? `&indicators=${indicatorsToFetch.join(',')}` : ''
       const response = await fetch(`/api/market/kline-with-indicators/${symbol}?market=hyperliquid&period=${period}&count=500${indicatorsParam}`)
       const result = await response.json()
@@ -932,6 +942,11 @@ export default function TradingViewChart({ symbol, period, chartType, selectedIn
           setCachedIndicators(prev => [...new Set([...prev, ...indicatorsToFetch])])
         }
 
+        // 通知父组件最新数据，用于 AI 分析启用按钮
+        if (onDataUpdate) {
+          onDataUpdate(newChartData, result.indicators || {})
+        }
+
         setHasData(true)
       } else {
         setHasData(false)
@@ -942,6 +957,7 @@ export default function TradingViewChart({ symbol, period, chartType, selectedIn
     } finally {
       setLoading(false)
       onLoadingChange(false)
+      onIndicatorLoadingChange?.(false)
     }
   }
 

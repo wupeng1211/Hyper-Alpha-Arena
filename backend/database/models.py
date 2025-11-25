@@ -560,6 +560,34 @@ class KlineCollectionTask(Base):
     )
 
 
+class KlineAIAnalysisLog(Base):
+    """Store K-line AI analysis logs for chart insights"""
+    __tablename__ = "kline_ai_analysis_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+
+    # Analysis context
+    symbol = Column(String(20), nullable=False, index=True)
+    period = Column(String(10), nullable=False)  # K-line period (1m, 5m, 1h, etc.)
+    user_message = Column(Text, nullable=True)  # User's custom question
+
+    # AI model info
+    model_used = Column(String(100), nullable=False)
+
+    # Snapshots
+    prompt_snapshot = Column(Text, nullable=True)  # Full prompt sent to AI
+    analysis_result = Column(Text, nullable=True)  # AI's analysis response (Markdown)
+
+    # Metadata
+    created_at = Column(TIMESTAMP, server_default=func.current_timestamp(), index=True)
+
+    # Relationships
+    user = relationship("User")
+    account = relationship("Account")
+
+
 # CRYPTO market trading configuration constants
 CRYPTO_MIN_COMMISSION = 0.1  # $0.1 minimum commission
 CRYPTO_COMMISSION_RATE = 0.001  # 0.1% commission rate

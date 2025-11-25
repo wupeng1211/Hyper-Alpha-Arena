@@ -48,6 +48,12 @@ def calculate_indicators(kline_data: List[Dict[str, Any]], indicators: List[str]
                     results['EMA20'] = _calculate_ema(df, 20)
                 elif indicator == 'EMA50':
                     results['EMA50'] = _calculate_ema(df, 50)
+                elif indicator == 'MA5':
+                    results['MA5'] = _calculate_sma(df, 5)
+                elif indicator == 'MA10':
+                    results['MA10'] = _calculate_sma(df, 10)
+                elif indicator == 'MA20':
+                    results['MA20'] = _calculate_sma(df, 20)
                 elif indicator == 'MACD':
                     results['MACD'] = _calculate_macd(df)
                 elif indicator == 'RSI14':
@@ -76,6 +82,12 @@ def _calculate_ema(df: pd.DataFrame, period: int) -> List[float]:
     """计算指数移动平均线"""
     ema = ta.ema(df['close'], length=period)
     return ema.fillna(0).tolist()
+
+
+def _calculate_sma(df: pd.DataFrame, period: int) -> List[float]:
+    """计算简单移动平均线"""
+    sma = ta.sma(df['close'], length=period)
+    return sma.fillna(0).tolist()
 
 
 def _calculate_macd(df: pd.DataFrame) -> Dict[str, List[float]]:
@@ -168,6 +180,9 @@ def _calculate_atr(df: pd.DataFrame, period: int) -> List[float]:
 def get_available_indicators() -> List[Dict[str, str]]:
     """获取支持的技术指标列表"""
     return [
+        {'name': 'MA5', 'description': '5期简单移动平均线'},
+        {'name': 'MA10', 'description': '10期简单移动平均线'},
+        {'name': 'MA20', 'description': '20期简单移动平均线'},
         {'name': 'EMA20', 'description': '20期指数移动平均线'},
         {'name': 'EMA50', 'description': '50期指数移动平均线'},
         {'name': 'MACD', 'description': '移动平均收敛发散指标'},

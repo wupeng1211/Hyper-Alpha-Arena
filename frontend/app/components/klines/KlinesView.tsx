@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
 import TradingViewChart from './TradingViewChart'
+import AIAnalysisPanel from './AIAnalysisPanel'
 import PacmanLoader from '../ui/pacman-loader'
 
 interface KlinesViewProps {
@@ -40,6 +41,9 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
   const [chartType, setChartType] = useState<'candlestick' | 'line' | 'area'>('candlestick')
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>([])
   const [chartLoading, setChartLoading] = useState(false)
+  const [klinesData, setKlinesData] = useState<any[]>([])
+  const [indicatorsData, setIndicatorsData] = useState<Record<string, any>>({})
+  const [indicatorLoading, setIndicatorLoading] = useState(false)
 
   const marketDataIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const taskCheckIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -204,6 +208,15 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
     return marketData.find(data => data.symbol === symbol)
   }
 
+  const formatCompactNumber = (value: number) => {
+    if (!value && value !== 0) return '-'
+    const abs = Math.abs(value)
+    if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`
+    if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
+    if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}K`
+    return value.toLocaleString()
+  }
+
   // 渲染按钮或进度条
   const renderBackfillButton = () => {
     if (currentTask) {
@@ -251,227 +264,251 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
   }
 
   return (
-    <div className="flex flex-col h-full space-y-4 w-full overflow-hidden">
-      {/* Symbol Selection, Market Data and Technical Indicators */}
-      <div className="grid grid-cols-1 lg:grid-cols-6 gap-3 flex-shrink-0">
-        {/* Symbol and Period Selection */}
-        <Card>
-          <CardContent className="pt-4 space-y-3">
-            {/* Symbol and Period in one row */}
-            <div className="flex items-center gap-2">
-              <Select value={selectedSymbol} onValueChange={setSelectedSymbol}>
-                <SelectTrigger className="flex-1">
-                  <SelectValue placeholder="Select Symbol" />
-                </SelectTrigger>
-                <SelectContent>
-                  {watchlistSymbols.map(symbol => (
-                    <SelectItem key={symbol} value={symbol}>
-                      {symbol}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+    <div className="flex h-full w-full gap-4 overflow-hidden">
+      {/* 左侧 70%：选择区 + 市场数据 + 指标 + K线图 */}
+      <div className="flex flex-col flex-[7] min-w-0 space-y-4 overflow-hidden">
+        <div className="grid grid-cols-1 lg:grid-cols-6 gap-3 flex-shrink-0">
+          {/* Symbol and Period Selection */}
+          <Card className="lg:col-span-2">
+            <CardContent className="pt-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Select value={selectedSymbol} onValueChange={setSelectedSymbol}>
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="Select Symbol" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {watchlistSymbols.map(symbol => (
+                      <SelectItem key={symbol} value={symbol}>
+                        {symbol}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-              <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
-                <SelectTrigger className="w-16 sm:w-20">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1m">1m</SelectItem>
-                  <SelectItem value="3m">3m</SelectItem>
-                  <SelectItem value="5m">5m</SelectItem>
-                  <SelectItem value="15m">15m</SelectItem>
-                  <SelectItem value="30m">30m</SelectItem>
-                  <SelectItem value="1h">1h</SelectItem>
-                  <SelectItem value="2h">2h</SelectItem>
-                  <SelectItem value="4h">4h</SelectItem>
-                  <SelectItem value="8h">8h</SelectItem>
-                  <SelectItem value="12h">12h</SelectItem>
-                  <SelectItem value="1d">1d</SelectItem>
-                  <SelectItem value="3d">3d</SelectItem>
-                  <SelectItem value="1w">1w</SelectItem>
-                  <SelectItem value="1M">1M</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+                <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+                  <SelectTrigger className="w-24 sm:w-28">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1m">1m</SelectItem>
+                    <SelectItem value="3m">3m</SelectItem>
+                    <SelectItem value="5m">5m</SelectItem>
+                    <SelectItem value="15m">15m</SelectItem>
+                    <SelectItem value="30m">30m</SelectItem>
+                    <SelectItem value="1h">1h</SelectItem>
+                    <SelectItem value="2h">2h</SelectItem>
+                    <SelectItem value="4h">4h</SelectItem>
+                    <SelectItem value="8h">8h</SelectItem>
+                    <SelectItem value="12h">12h</SelectItem>
+                    <SelectItem value="1d">1d</SelectItem>
+                    <SelectItem value="3d">3d</SelectItem>
+                    <SelectItem value="1w">1w</SelectItem>
+                    <SelectItem value="1M">1M</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            {selectedSymbol && renderBackfillButton()}
-          </CardContent>
-        </Card>
+              {selectedSymbol && renderBackfillButton()}
+            </CardContent>
+          </Card>
 
-        {/* Market Data */}
-        <Card className="lg:col-span-2">
-          <CardHeader className="py-3">
-            <CardTitle className="text-sm">Market Data</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {selectedSymbol && (
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                {(() => {
-                  const data = getSymbolMarketData(selectedSymbol)
-                  return data ? (
-                    <>
-                      <div>
-                        <p className="text-xs text-muted-foreground">Mark</p>
-                        <p className="text-lg font-semibold">{data.price.toLocaleString()}</p>
+          {/* Market Data */}
+          <Card className="lg:col-span-2">
+            <CardHeader className="py-3">
+              <CardTitle className="text-sm">Market Data</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {selectedSymbol && (
+                <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                  {(() => {
+                    const data = getSymbolMarketData(selectedSymbol)
+                    return data ? (
+                      <>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Mark</p>
+                        <p className="text-base font-semibold">{data.price.toLocaleString()}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">Oracle</p>
-                        <p className="text-lg font-semibold">{data.oracle_price.toLocaleString()}</p>
+                        <p className="text-base font-semibold">{data.oracle_price.toLocaleString()}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">24h Change</p>
-                        <p className={`text-lg font-semibold ${data.change24h >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        <p className={`text-base font-semibold ${data.change24h >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                           {data.change24h >= 0 ? '+' : ''}{data.change24h.toFixed(0)} / {data.percentage24h >= 0 ? "+" : ""}{data.percentage24h.toFixed(2)}%
                         </p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">24h Volume</p>
-                        <p className="text-lg font-semibold">${data.volume24h.toLocaleString()}</p>
+                        <p className="text-base font-semibold">${formatCompactNumber(data.volume24h)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">Open Interest</p>
-                        <p className="text-lg font-semibold">${data.open_interest.toLocaleString()}</p>
+                        <p className="text-base font-semibold">${formatCompactNumber(data.open_interest)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">Funding Rate</p>
-                        <p className="text-lg font-semibold">{(data.funding_rate * 100).toFixed(4)}%</p>
+                        <p className="text-base font-semibold">{(data.funding_rate * 100).toFixed(4)}%</p>
                       </div>
                     </>
-                  ) : (
-                    <div className="col-span-full text-center text-muted-foreground">
-                      <div className="flex items-center justify-center gap-2">
-                        <PacmanLoader className="w-12 h-6" />
-                        Loading market data...
+                    ) : (
+                      <div className="col-span-full text-center text-muted-foreground">
+                        <div className="flex items-center justify-center gap-2">
+                          <PacmanLoader className="w-12 h-6" />
+                          Loading market data...
+                        </div>
                       </div>
-                    </div>
-                  )
-                })()}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                    )
+                  })()}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-        {/* Technical Indicators */}
-        <Card className="lg:col-span-3">
+          {/* Technical Indicators */}
+          <Card className="lg:col-span-2">
+            <CardHeader className="py-3">
+              <CardTitle className="text-sm">Technical Indicators</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-3">
+              <div>
+                <div className="text-xs text-muted-foreground mb-2">Trend Analysis</div>
+                <div className="grid grid-cols-5 gap-1">
+                  {['MA5', 'MA10', 'MA20', 'EMA20', 'EMA50'].map(indicator => (
+                    <button
+                      key={indicator}
+                      onClick={() => {
+                        setSelectedIndicators(prev =>
+                          prev.includes(indicator)
+                            ? prev.filter(i => i !== indicator)
+                            : [...prev, indicator]
+                        )
+                      }}
+                      className={`px-2 py-1 text-xs rounded transition-colors ${
+                        selectedIndicators.includes(indicator)
+                          ? 'bg-primary/20 text-primary border border-primary/30'
+                          : 'hover:bg-muted border'
+                      }`}
+                    >
+                      {indicator}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-muted-foreground mb-2">Momentum Oscillators & Volatility</div>
+                <div className="grid grid-cols-5 gap-1">
+                  {['RSI14', 'RSI7', 'MACD', 'BOLL', 'ATR14'].map(indicator => (
+                    <button
+                      key={indicator}
+                      onClick={() => {
+                        setSelectedIndicators(prev =>
+                          prev.includes(indicator)
+                            ? prev.filter(i => i !== indicator)
+                            : [...prev, indicator]
+                        )
+                      }}
+                      className={`px-2 py-1 text-xs rounded transition-colors ${
+                        selectedIndicators.includes(indicator)
+                          ? 'bg-primary/20 text-primary border border-primary/30'
+                          : 'hover:bg-muted border'
+                      }`}
+                    >
+                      {indicator}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* K-Line Chart Area */}
+        <Card className="flex-1 min-h-[420px] min-w-0 overflow-hidden">
           <CardHeader className="py-3">
-            <CardTitle className="text-sm">Technical Indicators</CardTitle>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <CardTitle className="text-sm">
+                  {selectedSymbol} K-Line Chart ({selectedPeriod})
+                </CardTitle>
+                {chartLoading && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <PacmanLoader className="w-12 h-6" />
+                    Loading K-line data...
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-1 bg-background/80 backdrop-blur-sm rounded-md p-1 border">
+                <button
+                  onClick={() => setChartType('candlestick')}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    chartType === 'candlestick'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'hover:bg-muted'
+                  }`}
+                >
+                  Candlestick
+                </button>
+                <button
+                  onClick={() => setChartType('line')}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    chartType === 'line'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'hover:bg-muted'
+                  }`}
+                >
+                  Line
+                </button>
+                <button
+                  onClick={() => setChartType('area')}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    chartType === 'area'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'hover:bg-muted'
+                  }`}
+                >
+                  Area
+                </button>
+              </div>
+            </div>
           </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {/* Trend Indicators */}
-            <div>
-              <div className="text-xs text-muted-foreground mb-2">Trend Analysis</div>
-              <div className="grid grid-cols-5 gap-1">
-                {['MA5', 'MA10', 'MA20', 'EMA20', 'EMA50'].map(indicator => (
-                  <button
-                    key={indicator}
-                    onClick={() => {
-                      setSelectedIndicators(prev =>
-                        prev.includes(indicator)
-                          ? prev.filter(i => i !== indicator)
-                          : [...prev, indicator]
-                      )
-                    }}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      selectedIndicators.includes(indicator)
-                        ? 'bg-primary/20 text-primary border border-primary/30'
-                        : 'hover:bg-muted border'
-                    }`}
-                  >
-                    {indicator}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Oscillator & Volatility Indicators */}
-            <div>
-              <div className="text-xs text-muted-foreground mb-2">Momentum Oscillators & Volatility</div>
-              <div className="grid grid-cols-5 gap-1">
-                {['RSI14', 'RSI7', 'MACD', 'BOLL', 'ATR14'].map(indicator => (
-                  <button
-                    key={indicator}
-                    onClick={() => {
-                      setSelectedIndicators(prev =>
-                        prev.includes(indicator)
-                          ? prev.filter(i => i !== indicator)
-                          : [...prev, indicator]
-                      )
-                    }}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      selectedIndicators.includes(indicator)
-                        ? 'bg-primary/20 text-primary border border-primary/30'
-                        : 'hover:bg-muted border'
-                    }`}
-                  >
-                    {indicator}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <CardContent className="h-[calc(100%-3rem)] pb-4">
+              <TradingViewChart
+                symbol={selectedSymbol}
+                period={selectedPeriod}
+                chartType={chartType}
+                selectedIndicators={selectedIndicators}
+                onLoadingChange={setChartLoading}
+                onIndicatorLoadingChange={setIndicatorLoading}
+                onDataUpdate={(klines, indicators) => {
+                  setKlinesData(klines || [])
+                  setIndicatorsData(indicators || {})
+                }}
+              />
           </CardContent>
         </Card>
       </div>
 
-      {/* K-Line Chart Area - 动态高度铺满剩余空间 */}
-      <Card className="flex-1 min-h-0 min-w-0 overflow-hidden">
-        <CardHeader className="py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <CardTitle className="text-sm">
-                {selectedSymbol} K-Line Chart ({selectedPeriod})
-              </CardTitle>
-              {chartLoading && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <PacmanLoader className="w-12 h-6" />
-                  Loading K-line data...
-                </div>
-              )}
-            </div>
-            <div className="flex gap-1 bg-background/80 backdrop-blur-sm rounded-md p-1 border">
-              <button
-                onClick={() => setChartType('candlestick')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
-                  chartType === 'candlestick'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-muted'
-                }`}
-              >
-                Candlestick
-              </button>
-              <button
-                onClick={() => setChartType('line')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
-                  chartType === 'line'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-muted'
-                }`}
-              >
-                Line
-              </button>
-              <button
-                onClick={() => setChartType('area')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
-                  chartType === 'area'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-muted'
-                }`}
-              >
-                Area
-              </button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="h-[calc(100%-3rem)] pb-4">
-          <TradingViewChart
-            symbol={selectedSymbol}
-            period={selectedPeriod}
-            chartType={chartType}
-            selectedIndicators={selectedIndicators}
-            onLoadingChange={setChartLoading}
-          />
-        </CardContent>
-      </Card>
+      {/* 右侧 30%：AI Analysis 独立列 */}
+      <div className="flex flex-col flex-[3] min-w-[300px] space-y-4">
+        <Card className="flex-1 overflow-hidden">
+          <CardHeader className="py-3">
+            <CardTitle className="text-sm">AI Analysis</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0 h-full overflow-y-auto">
+            <AIAnalysisPanel
+              symbol={selectedSymbol}
+              period={selectedPeriod}
+              klines={klinesData}
+              indicators={indicatorsData}
+              marketData={getSymbolMarketData(selectedSymbol)}
+              selectedIndicators={selectedIndicators}
+              onAnalysisComplete={() => {}}
+            />
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

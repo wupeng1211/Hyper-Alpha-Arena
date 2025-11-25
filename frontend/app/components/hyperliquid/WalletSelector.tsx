@@ -23,11 +23,13 @@ interface WalletOption {
 interface WalletSelectorProps {
   selectedWalletId: number | null
   onSelect: (wallet: WalletOption) => void
+  showLabel?: boolean
 }
 
 export default function WalletSelector({
   selectedWalletId,
-  onSelect
+  onSelect,
+  showLabel = true
 }: WalletSelectorProps) {
   const [wallets, setWallets] = useState<WalletOption[]>([])
   const [loading, setLoading] = useState(true)
@@ -62,9 +64,22 @@ export default function WalletSelector({
 
   if (loading) {
     return (
-      <div className="text-center text-muted-foreground py-4">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
-        Loading wallets...
+      <div className="flex items-center justify-center py-4">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-block">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 38" stroke="currentColor" className="w-6 h-6 text-primary">
+              <g fill="none" fillRule="evenodd">
+                <g transform="translate(1 1)" strokeWidth="2">
+                  <circle strokeOpacity=".3" cx="18" cy="18" r="18" />
+                  <path d="M36 18c0-9.94-8.06-18-18-18">
+                    <animateTransform attributeName="transform" type="rotate" from="0 18 18" to="360 18 18" dur="0.8s" repeatCount="indefinite" />
+                  </path>
+                </g>
+              </g>
+            </svg>
+          </span>
+          <span>Loading wallets...</span>
+        </div>
       </div>
     )
   }
@@ -90,9 +105,11 @@ export default function WalletSelector({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <label className="text-sm font-medium text-muted-foreground">💼 Select Trading Wallet</label>
-      </div>
+      {showLabel && (
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium text-muted-foreground">💼 Select Trading Wallet</label>
+        </div>
+      )}
 
       <select
         value={selectedWalletId || ''}
