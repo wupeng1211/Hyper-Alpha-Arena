@@ -72,10 +72,18 @@ def setup_hyperliquid_account(
         account.hyperliquid_mainnet_private_key = encrypted_key
 
     # Configure account
-    account.hyperliquid_environment = environment
+    # IMPORTANT: Account environment MUST sync with global trading mode
+    global_mode = get_global_trading_mode(db)
+    account.hyperliquid_environment = global_mode
     account.hyperliquid_enabled = "true"
     account.max_leverage = max_leverage
     account.default_leverage = default_leverage
+
+    if global_mode != environment:
+        logger.warning(
+            f"Account environment set to global mode '{global_mode}' instead of requested '{environment}'. "
+            f"Credentials stored for '{environment}' but will use global mode."
+        )
 
     try:
         db.commit()
@@ -116,6 +124,69 @@ def get_global_trading_mode(db: Session) -> str:
 
     # Default to testnet for safety
     return "testnet"
+
+
+def get_leverage_settings(db: Session, account_id: int, environment: str) -> Dict[str, int]:
+    """
+    Get leverage settings for an account in a specific environment
+
+    This function implements the unified leverage retrieval logic:
+    1. Query HyperliquidWallet table for the specific (account_id, environment)
+    2. If wallet found and active, use wallet.max_leverage and wallet.default_leverage
+    3. If no wallet found, fall back to account.max_leverage and account.default_leverage
+
+    This ensures leverage settings are consistent across all code locations:
+    - Prompt template variable filling (_build_prompt_context)
+    - Order placement validation (hyperliquid_routes.py)
+    - AI decision-making process
+
+    Args:
+        db: Database session
+        account_id: Target account ID
+        environment: "testnet" or "mainnet"
+
+    Returns:
+        Dict with keys: "max_leverage" (int), "default_leverage" (int)
+
+    Raises:
+        ValueError: If account not found or environment invalid
+    """
+    if environment not in ["testnet", "mainnet"]:
+        raise ValueError(f"Invalid environment: {environment}. Must be 'testnet' or 'mainnet'")
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise ValueError(f"Account {account_id} not found")
+
+    # Try to get wallet from hyperliquid_wallets table (new architecture)
+    wallet = db.query(HyperliquidWallet).filter(
+        HyperliquidWallet.account_id == account_id,
+        HyperliquidWallet.environment == environment,
+        HyperliquidWallet.is_active == "true"
+    ).first()
+
+    if wallet:
+        # Use wallet leverage settings (new architecture)
+        logger.info(
+            f"Using leverage from {environment} wallet for account {account.name} (ID: {account_id}): "
+            f"max={wallet.max_leverage}x, default={wallet.default_leverage}x"
+        )
+        return {
+            "max_leverage": wallet.max_leverage,
+            "default_leverage": wallet.default_leverage
+        }
+    else:
+        # Fall back to Account table leverage settings (backward compatibility)
+        max_lev = account.max_leverage if account.max_leverage is not None else 3
+        default_lev = account.default_leverage if account.default_leverage is not None else 1
+        logger.info(
+            f"No {environment} wallet found for account {account.name} (ID: {account_id}), "
+            f"using Account table fallback: max={max_lev}x, default={default_lev}x"
+        )
+        return {
+            "max_leverage": max_lev,
+            "default_leverage": default_lev
+        }
 
 
 def get_hyperliquid_client(db: Session, account_id: int, override_environment: str = None) -> HyperliquidTradingClient:
@@ -301,15 +372,35 @@ def switch_hyperliquid_environment(
                 "Please setup mainnet credentials first using setup_hyperliquid_account()."
             )
 
-    # Perform switch
-    old_env = account.hyperliquid_environment
-    account.hyperliquid_environment = target_environment
+    # IMPORTANT: Switch GLOBAL trading mode, not per-account
+    # Update system config
+    config = db.query(SystemConfig).filter(
+        SystemConfig.key == "hyperliquid_trading_mode"
+    ).first()
+
+    if not config:
+        config = SystemConfig(key="hyperliquid_trading_mode", value=target_environment)
+        db.add(config)
+    else:
+        old_global_mode = config.value
+        config.value = target_environment
+        logger.info(f"Switching GLOBAL trading mode from {old_global_mode} to {target_environment}")
+
+    # Sync ALL Hyperliquid-enabled accounts to new global mode
+    all_hl_accounts = db.query(Account).filter(
+        Account.hyperliquid_enabled == "true"
+    ).all()
+
+    synced_count = 0
+    for acc in all_hl_accounts:
+        acc.hyperliquid_environment = target_environment
+        synced_count += 1
 
     try:
         db.commit()
         logger.warning(
-            f"ENVIRONMENT SWITCH: Account {account.name} (ID: {account_id}) "
-            f"switched from {old_env} to {target_environment.upper()}"
+            f"GLOBAL ENVIRONMENT SWITCH: Trading mode changed to {target_environment.upper()}. "
+            f"Synced {synced_count} Hyperliquid accounts."
         )
     except Exception as e:
         db.rollback()
@@ -371,13 +462,23 @@ def get_account_hyperliquid_config(db: Session, account_id: int) -> Dict[str, An
     # Get global trading mode as the current environment
     current_environment = get_global_trading_mode(db)
 
+    # Get leverage settings for current environment (uses unified getter)
+    try:
+        leverage_settings = get_leverage_settings(db, account_id, current_environment)
+        max_leverage = leverage_settings["max_leverage"]
+        default_leverage = leverage_settings["default_leverage"]
+    except Exception as e:
+        logger.warning(f"Failed to get leverage settings for account {account_id}: {e}, using Account table fallback")
+        max_leverage = account.max_leverage if account.max_leverage is not None else 3
+        default_leverage = account.default_leverage if account.default_leverage is not None else 1
+
     return {
         'account_id': account_id,
         'account_name': account.name,
         'hyperliquid_enabled': enabled,
         'environment': current_environment,  # Use global trading mode
-        'max_leverage': account.max_leverage,
-        'default_leverage': account.default_leverage,
+        'max_leverage': max_leverage,
+        'default_leverage': default_leverage,
         'testnet_configured': has_testnet,
         'mainnet_configured': has_mainnet,
         # Additional info for frontend (optional, for WalletConfigPanel)

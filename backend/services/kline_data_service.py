@@ -117,14 +117,17 @@ class KlineDataService:
                     datetime_str = datetime.utcfromtimestamp(kline.timestamp).strftime('%Y-%m-%d %H:%M:%S')
 
                     # 使用原生SQL的ON CONFLICT DO NOTHING实现去重
+                    # NOTE: K线数据库只存储 mainnet 数据，testnet 数据实时获取不存储
                     db.execute(text("""
                         INSERT INTO crypto_klines (
                             exchange, symbol, market, timestamp, period, datetime_str,
-                            open_price, high_price, low_price, close_price, volume, created_at
+                            open_price, high_price, low_price, close_price, volume,
+                            environment, created_at
                         ) VALUES (
                             :exchange, :symbol, :market, :timestamp, :period, :datetime_str,
-                            :open_price, :high_price, :low_price, :close_price, :volume, CURRENT_TIMESTAMP
-                        ) ON CONFLICT (exchange, symbol, market, period, timestamp) DO NOTHING
+                            :open_price, :high_price, :low_price, :close_price, :volume,
+                            'mainnet', CURRENT_TIMESTAMP
+                        ) ON CONFLICT (exchange, symbol, market, period, timestamp, environment) DO NOTHING
                     """), {
                         'exchange': kline.exchange,
                         'symbol': kline.symbol,

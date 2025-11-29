@@ -245,23 +245,46 @@ export default function AIAnalysisPanel({
         }, null, 2)
       }
 
-      const response = await fetch('/api/klines/ai-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestData)
-      })
+      // Create AbortController with 10-minute timeout for AI analysis
+      // Reasoning models (like deepseek-reasoner) can be very slow
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 600000) // 10 minutes
 
-      const data = await response.json()
-      setResult(data)
+      try {
+        const response = await fetch('/api/klines/ai-analysis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestData),
+          signal: controller.signal
+        })
 
-      if (data.success && onAnalysisComplete) {
-        onAnalysisComplete()
+        clearTimeout(timeoutId)
+        const data = await response.json()
+        setResult(data)
+
+        if (data.success && onAnalysisComplete) {
+          onAnalysisComplete()
+        }
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId)
+        console.error('Analysis failed:', fetchError)
+
+        // Provide more specific error messages
+        let errorMessage = 'Network error occurred'
+        if (fetchError.name === 'AbortError') {
+          errorMessage = 'Analysis timeout (10 minutes). Please try again with fewer K-lines or a simpler question.'
+        }
+
+        setResult({
+          success: false,
+          error: errorMessage
+        })
       }
     } catch (error) {
       console.error('Analysis failed:', error)
       setResult({
         success: false,
-        error: 'Network error occurred'
+        error: 'Failed to prepare analysis request'
       })
     } finally {
       setLoading(false)

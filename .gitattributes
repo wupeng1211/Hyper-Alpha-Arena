@@ -1,0 +1,22 @@
+# Enforce LF line endings for shell scripts to prevent Windows CRLF issues
+# This fixes the "cannot execute: required file not found" error on first install
+*.sh text eol=lf
+
+# Force LF for other Unix-specific files
+Dockerfile text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Ensure binary files are not modified
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

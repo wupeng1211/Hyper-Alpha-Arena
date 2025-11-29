@@ -567,8 +567,16 @@ def place_ai_driven_hyperliquid_order(
                 order_result = None
 
                 if operation == "buy":
-                    order_value = available_balance * target_portion
+                    # Calculate margin first, then position value with leverage
+                    margin = available_balance * target_portion
+                    order_value = margin * leverage
                     quantity = round(order_value / price, 6)
+
+                    logger.info(
+                        f"Position sizing for {symbol}: "
+                        f"margin=${margin:.2f} ({target_portion:.1%} of ${available_balance:.2f}), "
+                        f"leverage={leverage}x, position_value=${order_value:.2f}, quantity={quantity}"
+                    )
 
                     # Extract TP/SL and time_in_force from AI decision
                     take_profit_price = decision.get("take_profit_price")
@@ -621,8 +629,16 @@ def place_ai_driven_hyperliquid_order(
                     )
 
                 elif operation == "sell":
-                    order_value = available_balance * target_portion
+                    # Calculate margin first, then position value with leverage
+                    margin = available_balance * target_portion
+                    order_value = margin * leverage
                     quantity = round(order_value / price, 6)
+
+                    logger.info(
+                        f"Position sizing for {symbol}: "
+                        f"margin=${margin:.2f} ({target_portion:.1%} of ${available_balance:.2f}), "
+                        f"leverage={leverage}x, position_value=${order_value:.2f}, quantity={quantity}"
+                    )
 
                     # Extract TP/SL and time_in_force from AI decision
                     take_profit_price = decision.get("take_profit_price")

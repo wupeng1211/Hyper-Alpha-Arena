@@ -12,7 +12,7 @@ from typing import Iterable, List, Optional
 
 from database.connection import SessionLocal
 from database.models import CryptoPriceTick
-from services.hyperliquid_market_data import hyperliquid_client
+from services.hyperliquid_market_data import get_default_hyperliquid_client
 from services.price_cache import record_price_update
 from services.market_events import publish_price_update
 
@@ -76,7 +76,8 @@ class MarketDataStream:
         """Fetch ticker for symbol, update cache, persist tick, publish event."""
         try:
             print(f"Fetching price for {symbol}...")
-            ticker_price = hyperliquid_client.get_last_price(symbol)
+            client = get_default_hyperliquid_client()
+            ticker_price = client.get_last_price(symbol)
             print(f"Got price for {symbol}: {ticker_price}")
         except Exception as fetch_err:
             logger.warning("Failed to fetch price for %s: %s", symbol, fetch_err)

@@ -13,7 +13,11 @@ class PromptTemplateResponse(BaseModel):
     description: Optional[str] = None
     template_text: str = Field(..., alias="templateText")
     system_template_text: str = Field(..., alias="systemTemplateText")
+    is_system: str = Field(..., alias="isSystem")
+    is_deleted: str = Field(..., alias="isDeleted")
+    created_by: str = Field(..., alias="createdBy")
     updated_by: Optional[str] = Field(None, alias="updatedBy")
+    created_at: Optional[datetime] = Field(None, alias="createdAt")
     updated_at: Optional[datetime] = Field(None, alias="updatedAt")
 
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
@@ -56,6 +60,30 @@ class PromptBindingUpsertRequest(BaseModel):
     id: Optional[int] = None
     account_id: Optional[int] = Field(None, alias="accountId")
     prompt_template_id: Optional[int] = Field(None, alias="promptTemplateId")
+    updated_by: Optional[str] = Field(None, alias="updatedBy")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PromptTemplateCopyRequest(BaseModel):
+    new_name: Optional[str] = Field(None, alias="newName")
+    created_by: str = Field(default="ui", alias="createdBy")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PromptTemplateCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    template_text: str = Field(default="", alias="templateText")
+    created_by: str = Field(default="ui", alias="createdBy")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PromptTemplateNameUpdateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
     updated_by: Optional[str] = Field(None, alias="updatedBy")
 
     model_config = ConfigDict(populate_by_name=True)

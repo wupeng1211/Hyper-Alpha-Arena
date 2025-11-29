@@ -224,6 +224,15 @@ Account Leverage Settings:
 === OPEN POSITIONS ===
 {positions_detail}
 
+=== RECENT TRADING HISTORY ===
+Recent closed trades (last 5 positions):
+{recent_trades_summary}
+
+⚠️ IMPORTANT: Review your recent trading patterns to avoid flip-flop behavior (rapid position reversals).
+- If you recently closed a position, ensure there's a clear reason to re-enter
+- Consider the holding duration of recent trades - are you exiting too quickly?
+- Maintain consistency with your stated trading strategy and timeframe
+
 === SYMBOLS IN PLAY ===
 Monitoring {selected_symbols_count} Hyperliquid contracts (multi-coin decisioning is the default):
 {selected_symbols_detail}
@@ -237,6 +246,41 @@ Current prices (USD):
 
 === LATEST CRYPTO NEWS ===
 {news_section}
+
+=== TECHNICAL ANALYSIS (K-line & Indicators) ===
+Use K-line data, technical indicators, and market data to inform your decisions. All variables below are optional and will be populated if included in the template.
+
+**Market Data Variables** (real-time market information):
+- {{BTC_market_data}} - Current price, 24h change, volume, open interest, funding rate for BTC
+- {{ETH_market_data}} - Market data for ETH
+- {{SOL_market_data}} - Market data for SOL
+
+**K-line Variables** (historical price action):
+- {{BTC_klines_15m}}(200) - Last 200 candles of BTC 15-minute K-line data
+- {{ETH_klines_1h}}(100) - Last 100 candles of ETH 1-hour K-line data
+
+**Technical Indicator Variables** (must match K-line period):
+- {{BTC_RSI14_15m}} - RSI(14) indicator for BTC on 15-minute chart
+- {{BTC_MACD_15m}} - MACD indicator for BTC on 15-minute chart
+- {{BTC_MA_15m}} - Moving averages (MA5, MA10, MA20) for BTC
+- {{BTC_EMA_15m}} - Exponential moving averages (EMA20, EMA50) for BTC
+- {{BTC_BOLL_15m}} - Bollinger Bands for BTC
+- {{BTC_ATR14_15m}} - Average True Range for BTC
+
+Supported periods: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 3d, 1w, 1M
+Supported indicators: RSI14, MACD, MA, EMA, BOLL, ATR14
+
+{BTC_market_data}
+{BTC_klines_15m}
+{BTC_RSI14_15m}
+{BTC_MACD_15m}
+{BTC_MA_15m}
+
+{ETH_market_data}
+{ETH_klines_15m}
+{ETH_RSI14_15m}
+{ETH_MACD_15m}
+{ETH_MA_15m}
 
 === HYPERLIQUID PRICE LIMITS (CRITICAL) ===
 ⚠️ ALL orders must have prices within ±1% of oracle price or will be rejected.

@@ -104,9 +104,9 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 # 其他周期的计算逻辑
                 limit = 1000  # 默认限制
 
-            # 调用现有方法获取历史数据
-            klines = await self.market_data.get_kline_data(
-                symbol, period, limit=min(limit, 5000)
+            # 调用现有方法获取历史数据 (同步方法，不需要await)
+            klines = self.market_data.get_kline_data(
+                symbol, period, count=min(limit, 5000)
             )
 
             result = []

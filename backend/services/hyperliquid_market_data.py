@@ -10,15 +10,19 @@ import time
 logger = logging.getLogger(__name__)
 
 class HyperliquidClient:
-    def __init__(self):
+    def __init__(self, environment: str = "mainnet"):
+        self.environment = environment
         self.exchange = None
         self._initialize_exchange()
-    
+
     def _initialize_exchange(self):
         """Initialize CCXT Hyperliquid exchange"""
         try:
+            # Dynamic sandbox mode based on environment
+            sandbox_mode = self.environment == "testnet"
+
             self.exchange = ccxt.hyperliquid({
-                'sandbox': False,  # Set to True for testnet
+                'sandbox': sandbox_mode,  # Dynamic based on environment
                 'enableRateLimit': True,
                 'options': {
                     'fetchMarkets': {
@@ -29,9 +33,9 @@ class HyperliquidClient:
                 }
             })
             self._disable_hip3_markets()
-            logger.info("Hyperliquid exchange initialized successfully")
+            logger.info(f"Hyperliquid exchange initialized successfully for {self.environment} environment")
         except Exception as e:
-            logger.error(f"Failed to initialize Hyperliquid exchange: {e}")
+            logger.error(f"Failed to initialize Hyperliquid exchange for {self.environment}: {e}")
             raise
 
     def _disable_hip3_markets(self) -> None:
@@ -75,9 +79,15 @@ class HyperliquidClient:
         try:
             import requests
 
+            # Use environment-specific API endpoint
+            if self.environment == "testnet":
+                api_url = "https://api.hyperliquid-testnet.xyz/info"
+            else:
+                api_url = "https://api.hyperliquid.xyz/info"
+
             # Use Hyperliquid native API for complete market data
             response = requests.post(
-                "https://api.hyperliquid.xyz/info",
+                api_url,
                 json={"type": "metaAndAssetCtxs"},
                 timeout=10
             )
@@ -120,6 +130,9 @@ class HyperliquidClient:
             change_24h = mark_px - prev_day_px if prev_day_px else 0
             percentage_24h = (change_24h / prev_day_px * 100) if prev_day_px else 0
 
+            # Convert open interest to USD value (OI * price)
+            open_interest_usd = open_interest * mark_px
+
             result = {
                 'symbol': symbol,
                 'price': mark_px,
@@ -127,7 +140,7 @@ class HyperliquidClient:
                 'change24h': change_24h,
                 'volume24h': day_ntl_vlm,
                 'percentage24h': percentage_24h,
-                'open_interest': open_interest,
+                'open_interest': open_interest_usd,
                 'funding_rate': funding_rate,
             }
 
@@ -259,7 +272,22 @@ class HyperliquidClient:
             return []
 
     def _persist_kline_data(self, symbol: str, period: str, klines: List[Dict[str, Any]]):
-        """Persist kline data to database"""
+        """Persist kline data to database
+
+        IMPORTANT DESIGN DECISION:
+        Only mainnet K-line data is persisted to database.
+        Testnet data is fetched in real-time on-demand and NOT stored.
+
+        This design ensures:
+        1. Database contains consistent historical data (mainnet only)
+        2. Testnet trading uses real-time API calls without database overhead
+        3. No environment mixing in stored K-line data
+        """
+        # CRITICAL: Only persist mainnet data per design specification
+        if self.environment != "mainnet":
+            logger.debug(f"Skipping K-line persistence for {symbol} {period} (environment={self.environment}, only mainnet data is stored)")
+            return
+
         try:
             from database.connection import SessionLocal
             from repositories.kline_repo import KlineRepository
@@ -272,7 +300,8 @@ class HyperliquidClient:
                     market="CRYPTO",
                     period=period,
                     kline_data=klines,
-                    exchange="hyperliquid"
+                    exchange="hyperliquid",
+                    environment="mainnet"  # Always store as mainnet per design
                 )
                 logger.debug(f"Persisted {result['total']} kline records for {symbol} {period}")
             finally:
@@ -366,30 +395,50 @@ class HyperliquidClient:
             return f"{symbol_upper}/USDC"
 
 
-# Global client instance
-hyperliquid_client = HyperliquidClient()
+# Client factory functions
+_client_cache = {}
+
+def create_hyperliquid_client(environment: str = "mainnet") -> HyperliquidClient:
+    """Create a new HyperliquidClient instance for the specified environment"""
+    return HyperliquidClient(environment=environment)
+
+def get_hyperliquid_client_for_environment(environment: str = "mainnet") -> HyperliquidClient:
+    """Get cached HyperliquidClient instance for the specified environment"""
+    if environment not in _client_cache:
+        _client_cache[environment] = create_hyperliquid_client(environment)
+    return _client_cache[environment]
+
+# Backward compatibility - default to mainnet
+def get_default_hyperliquid_client() -> HyperliquidClient:
+    """Get default HyperliquidClient (mainnet) for backward compatibility"""
+    return get_hyperliquid_client_for_environment("mainnet")
 
 
-def get_last_price_from_hyperliquid(symbol: str) -> Optional[float]:
+def get_last_price_from_hyperliquid(symbol: str, environment: str = "mainnet") -> Optional[float]:
     """Get last price from Hyperliquid"""
-    return hyperliquid_client.get_last_price(symbol)
+    client = get_hyperliquid_client_for_environment(environment)
+    return client.get_last_price(symbol)
 
 
-def get_kline_data_from_hyperliquid(symbol: str, period: str = '1d', count: int = 100, persist: bool = True) -> List[Dict[str, Any]]:
+def get_kline_data_from_hyperliquid(symbol: str, period: str = '1d', count: int = 100, persist: bool = True, environment: str = "mainnet") -> List[Dict[str, Any]]:
     """Get kline data from Hyperliquid"""
-    return hyperliquid_client.get_kline_data(symbol, period, count, persist)
+    client = get_hyperliquid_client_for_environment(environment)
+    return client.get_kline_data(symbol, period, count, persist)
 
 
-def get_market_status_from_hyperliquid(symbol: str) -> Dict[str, Any]:
+def get_market_status_from_hyperliquid(symbol: str, environment: str = "mainnet") -> Dict[str, Any]:
     """Get market status from Hyperliquid"""
-    return hyperliquid_client.get_market_status(symbol)
+    client = get_hyperliquid_client_for_environment(environment)
+    return client.get_market_status(symbol)
 
 
-def get_all_symbols_from_hyperliquid() -> List[str]:
+def get_all_symbols_from_hyperliquid(environment: str = "mainnet") -> List[str]:
     """Get all available symbols from Hyperliquid"""
-    return hyperliquid_client.get_all_symbols()
+    client = get_hyperliquid_client_for_environment(environment)
+    return client.get_all_symbols()
 
 
-def get_ticker_data_from_hyperliquid(symbol: str) -> Optional[Dict[str, Any]]:
+def get_ticker_data_from_hyperliquid(symbol: str, environment: str = "mainnet") -> Optional[Dict[str, Any]]:
     """Get complete ticker data from Hyperliquid"""
-    return hyperliquid_client.get_ticker_data(symbol)
+    client = get_hyperliquid_client_for_environment(environment)
+    return client.get_ticker_data(symbol)

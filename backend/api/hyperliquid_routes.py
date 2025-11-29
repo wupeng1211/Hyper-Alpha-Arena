@@ -340,13 +340,20 @@ async def place_manual_order(
     try:
         client = get_hyperliquid_client(db, account_id, override_environment=request.environment)
 
-        # Validate leverage against account limits
-        from database.models import Account
-        account = db.query(Account).filter(Account.id == account_id).first()
-        if request.leverage > account.max_leverage:
+        # Validate leverage against wallet limits (uses unified leverage getter)
+        from services.hyperliquid_environment import get_leverage_settings, get_global_trading_mode
+
+        # Determine actual environment being used
+        actual_environment = request.environment if request.environment else get_global_trading_mode(db)
+
+        # Get leverage settings from wallet (or Account table fallback)
+        leverage_settings = get_leverage_settings(db, account_id, actual_environment)
+        max_leverage = leverage_settings["max_leverage"]
+
+        if request.leverage > max_leverage:
             raise HTTPException(
                 status_code=400,
-                detail=f"Leverage {request.leverage}x exceeds account maximum {account.max_leverage}x"
+                detail=f"Leverage {request.leverage}x exceeds account maximum {max_leverage}x for {actual_environment} environment"
             )
 
         # Place order using native Hyperliquid API with TP/SL support

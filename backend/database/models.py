@@ -224,6 +224,7 @@ class CryptoKline(Base):
     period = Column(String(10), nullable=False)  # 1m, 5m, 15m, 30m, 1h, 1d
     timestamp = Column(Integer, nullable=False, index=True)
     datetime_str = Column(String(50), nullable=False)
+    environment = Column(String(20), nullable=False, default="mainnet", index=True)  # testnet or mainnet
     open_price = Column(DECIMAL(18, 6), nullable=True)
     high_price = Column(DECIMAL(18, 6), nullable=True)
     low_price = Column(DECIMAL(18, 6), nullable=True)
@@ -234,7 +235,7 @@ class CryptoKline(Base):
     percent = Column(DECIMAL(10, 4), nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.current_timestamp())
 
-    __table_args__ = (UniqueConstraint('exchange', 'symbol', 'market', 'period', 'timestamp'),)
+    __table_args__ = (UniqueConstraint('exchange', 'symbol', 'market', 'period', 'timestamp', 'environment'),)
 
 
 class CryptoPriceTick(Base):
@@ -343,11 +344,17 @@ class PromptTemplate(Base):
     __tablename__ = "prompt_templates"
 
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String(100), unique=True, nullable=False)
+    key = Column(String(100), nullable=False, index=True)  # Removed unique constraint to allow copies
     name = Column(String(200), nullable=False)
     description = Column(String(500), nullable=True)
     template_text = Column(Text, nullable=False)
     system_template_text = Column(Text, nullable=False)
+
+    # User-level template support
+    is_system = Column(String(10), nullable=False, default="false")  # System templates cannot be deleted
+    is_deleted = Column(String(10), nullable=False, default="false")  # Soft delete
+    created_by = Column(String(100), nullable=False, default="system")  # Creator identifier
+
     updated_by = Column(String(100), nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.current_timestamp())
     updated_at = Column(

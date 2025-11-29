@@ -1,6 +1,7 @@
 """
 K-line AI Analysis API Routes
 """
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -100,8 +101,10 @@ async def create_ai_analysis(
     klines_data = [k.model_dump() for k in request.klines]
     market_data = request.market_data.model_dump()
 
-    # Perform analysis
-    result = analyze_kline_chart(
+    # Perform analysis in thread pool to avoid blocking event loop
+    # analyze_kline_chart uses synchronous requests.post() which would block
+    result = await asyncio.to_thread(
+        analyze_kline_chart,
         db=db,
         account=account,
         symbol=request.symbol,

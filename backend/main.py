@@ -210,6 +210,58 @@ def on_startup():
             db.rollback()
             print(f"[startup] Failed to ensure global_sampling_configs.sampling_depth: {migration_err}")
 
+        # Ensure crypto_klines has environment column (for testnet/mainnet isolation)
+        try:
+            result = db.execute(text("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'crypto_klines'
+            """))
+            columns = {row[0] for row in result}
+
+            if "environment" not in columns:
+                print("[startup] Adding environment column to crypto_klines table...")
+                # Add environment column with default value
+                db.execute(text("""
+                    ALTER TABLE crypto_klines
+                    ADD COLUMN environment VARCHAR(20) NOT NULL DEFAULT 'mainnet'
+                """))
+
+                # Update all existing records to 'mainnet' (they were from mainnet API)
+                db.execute(text("""
+                    UPDATE crypto_klines SET environment = 'mainnet' WHERE environment IS NULL
+                """))
+
+                # Drop old unique constraints if exist
+                db.execute(text("""
+                    ALTER TABLE crypto_klines
+                    DROP CONSTRAINT IF EXISTS crypto_klines_exchange_symbol_market_period_timestamp_key
+                """))
+                db.execute(text("""
+                    ALTER TABLE crypto_klines
+                    DROP CONSTRAINT IF EXISTS uq_crypto_klines_unique
+                """))
+
+                # Create new unique constraint including environment
+                db.execute(text("""
+                    ALTER TABLE crypto_klines
+                    ADD CONSTRAINT crypto_klines_exchange_symbol_market_period_timestamp_environment_key
+                    UNIQUE (exchange, symbol, market, period, timestamp, environment)
+                """))
+
+                # Create performance indexes
+                db.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_crypto_klines_environment ON crypto_klines(environment)
+                """))
+                db.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_crypto_klines_symbol_period_env ON crypto_klines(symbol, period, environment)
+                """))
+
+                print("[startup] Successfully added environment column to crypto_klines")
+            db.commit()
+        except Exception as migration_err:
+            db.rollback()
+            print(f"[startup] Failed to ensure crypto_klines.environment: {migration_err}")
+
         if db.query(TradingConfig).count() == 0:
             for cfg in DEFAULT_TRADING_CONFIGS.values():
                 db.add(
@@ -264,7 +316,62 @@ def on_startup():
 
     finally:
         db.close()
-    
+
+    # ============================================================
+    # Upgrade: Initialize Hyperliquid trading mode config & fix NULL environment data
+    # ============================================================
+    # This ensures:
+    # 1. New installations have hyperliquid_trading_mode config initialized
+    # 2. Existing installations with NULL ai_decision_logs.hyperliquid_environment get fixed
+    # 3. Fixes ModelChat empty data issue for GitHub users
+    # ============================================================
+    db = SessionLocal()
+    try:
+        # Step 1: Initialize hyperliquid_trading_mode config if missing
+        config = db.query(SystemConfig).filter(
+            SystemConfig.key == "hyperliquid_trading_mode"
+        ).first()
+
+        if not config:
+            config = SystemConfig(
+                key="hyperliquid_trading_mode",
+                value="testnet",
+                description="Global Hyperliquid trading environment: 'testnet' or 'mainnet'. Controls which network all AI Traders connect to."
+            )
+            db.add(config)
+            db.commit()
+            print("✓ [Upgrade] Initialized global hyperliquid_trading_mode to 'testnet'")
+        else:
+            print(f"✓ [Upgrade] Global hyperliquid_trading_mode already configured: {config.value}")
+
+        # Step 2: One-time migration - fix NULL hyperliquid_environment in ai_decision_logs
+        # Check if there are any NULL records
+        null_count = db.execute(text("""
+            SELECT COUNT(*) FROM ai_decision_logs WHERE hyperliquid_environment IS NULL
+        """)).scalar()
+
+        if null_count > 0:
+            print(f"⚠ [Upgrade] Found {null_count} ai_decision_logs with NULL hyperliquid_environment, fixing...")
+
+            # Update all NULL records to 'testnet' (safe default)
+            updated = db.execute(text("""
+                UPDATE ai_decision_logs
+                SET hyperliquid_environment = 'testnet'
+                WHERE hyperliquid_environment IS NULL
+            """))
+            db.commit()
+
+            print(f"✓ [Upgrade] Updated {null_count} records from NULL to 'testnet' (ModelChat fix)")
+        else:
+            print("✓ [Upgrade] No NULL hyperliquid_environment records found, data is clean")
+
+    except Exception as e:
+        db.rollback()
+        print(f"✗ [Upgrade] Hyperliquid environment upgrade failed: {e}")
+        # Non-fatal - continue startup
+    finally:
+        db.close()
+
     # Ensure prompt templates exist
     db = SessionLocal()
     try:

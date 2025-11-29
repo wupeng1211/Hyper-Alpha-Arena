@@ -16,7 +16,7 @@ class KlineRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def save_kline_data(self, symbol: str, market: str, period: str, kline_data: List[dict], exchange: str = "hyperliquid") -> dict:
+    def save_kline_data(self, symbol: str, market: str, period: str, kline_data: List[dict], exchange: str = "hyperliquid", environment: str = "mainnet") -> dict:
         """
         Save K-line data to database (using upsert mode)
 
@@ -26,18 +26,19 @@ class KlineRepository:
             period: Time period
             kline_data: K-line data list
             exchange: Exchange name (hyperliquid, binance, etc.)
+            environment: Environment (testnet or mainnet)
 
         Returns:
             Save result dict, contains inserted and updated counts
         """
         inserted_count = 0
         updated_count = 0
-        
+
         for item in kline_data:
             timestamp = item.get('timestamp')
             if not timestamp:
                 continue
-                
+
             # Check if record with same timestamp already exists
             existing = self.db.query(CryptoKline).filter(
                 and_(
@@ -45,7 +46,8 @@ class KlineRepository:
                     CryptoKline.symbol == symbol,
                     CryptoKline.market == market,
                     CryptoKline.period == period,
-                    CryptoKline.timestamp == timestamp
+                    CryptoKline.timestamp == timestamp,
+                    CryptoKline.environment == environment
                 )
             ).first()
 
@@ -56,6 +58,7 @@ class KlineRepository:
                 'period': period,
                 'timestamp': timestamp,
                 'datetime_str': item.get('datetime', ''),
+                'environment': environment,
                 'open_price': item.get('open'),
                 'high_price': item.get('high'),
                 'low_price': item.get('low'),
@@ -87,7 +90,7 @@ class KlineRepository:
             'total': inserted_count + updated_count
         }
 
-    def get_kline_data(self, symbol: str, market: str, period: str, limit: int = 100, exchange: str = "hyperliquid") -> List[CryptoKline]:
+    def get_kline_data(self, symbol: str, market: str, period: str, limit: int = 100, exchange: str = "hyperliquid", environment: str = "mainnet") -> List[CryptoKline]:
         """
         Get K-line data
 
@@ -97,6 +100,7 @@ class KlineRepository:
             period: Time period
             limit: Limit count
             exchange: Exchange name
+            environment: Environment (testnet or mainnet)
 
         Returns:
             K-line data list
@@ -106,11 +110,12 @@ class KlineRepository:
                 CryptoKline.exchange == exchange,
                 CryptoKline.symbol == symbol,
                 CryptoKline.market == market,
-                CryptoKline.period == period
+                CryptoKline.period == period,
+                CryptoKline.environment == environment
             )
         ).order_by(CryptoKline.timestamp.desc()).limit(limit).all()
 
-    def delete_old_kline_data(self, symbol: str, market: str, period: str, keep_days: int = 30, exchange: str = "hyperliquid"):
+    def delete_old_kline_data(self, symbol: str, market: str, period: str, keep_days: int = 30, exchange: str = "hyperliquid", environment: str = "mainnet"):
         """
         Delete old K-line data
 
@@ -120,6 +125,7 @@ class KlineRepository:
             period: Time period
             keep_days: Days to keep
             exchange: Exchange name
+            environment: Environment (testnet or mainnet)
         """
         cutoff_timestamp = int((time.time() - keep_days * 24 * 3600) * 1000)
 
@@ -129,13 +135,14 @@ class KlineRepository:
                 CryptoKline.symbol == symbol,
                 CryptoKline.market == market,
                 CryptoKline.period == period,
-                CryptoKline.timestamp < cutoff_timestamp
+                CryptoKline.timestamp < cutoff_timestamp,
+                CryptoKline.environment == environment
             )
         ).delete()
 
         self.db.commit()
 
-    def get_missing_ranges(self, exchange: str, symbol: str, period: str, start_ts: int, end_ts: int) -> List[Tuple[int, int]]:
+    def get_missing_ranges(self, exchange: str, symbol: str, period: str, start_ts: int, end_ts: int, environment: str = "mainnet") -> List[Tuple[int, int]]:
         """
         Find missing time ranges in stored K-line data
 
@@ -145,6 +152,7 @@ class KlineRepository:
             period: Time period (1m, 5m, 1h, etc.)
             start_ts: Start timestamp (Unix timestamp in seconds)
             end_ts: End timestamp (Unix timestamp in seconds)
+            environment: Environment (testnet or mainnet)
 
         Returns:
             List of (start, end) timestamp tuples for missing ranges
@@ -161,7 +169,8 @@ class KlineRepository:
                 CryptoKline.symbol == symbol,
                 CryptoKline.period == period,
                 CryptoKline.timestamp >= start_ts,
-                CryptoKline.timestamp <= end_ts
+                CryptoKline.timestamp <= end_ts,
+                CryptoKline.environment == environment
             )
         ).order_by(CryptoKline.timestamp).all()
 
@@ -184,7 +193,7 @@ class KlineRepository:
 
         return missing_ranges
 
-    def ensure_history(self, exchange: str, symbol: str, period: str, start_ts: int, end_ts: int) -> List[CryptoKline]:
+    def ensure_history(self, exchange: str, symbol: str, period: str, start_ts: int, end_ts: int, environment: str = "mainnet") -> List[CryptoKline]:
         """
         Ensure K-line history is available for the given range, fetch missing data if needed
 
@@ -194,19 +203,20 @@ class KlineRepository:
             period: Time period
             start_ts: Start timestamp (Unix timestamp in seconds)
             end_ts: End timestamp (Unix timestamp in seconds)
+            environment: Environment (testnet or mainnet)
 
         Returns:
             Complete K-line data for the requested range
         """
         # Find missing ranges
-        missing_ranges = self.get_missing_ranges(exchange, symbol, period, start_ts, end_ts)
+        missing_ranges = self.get_missing_ranges(exchange, symbol, period, start_ts, end_ts, environment)
 
         # Fetch missing data for each range
         for range_start, range_end in missing_ranges:
             try:
-                self._fetch_and_store_range(exchange, symbol, period, range_start, range_end)
+                self._fetch_and_store_range(exchange, symbol, period, range_start, range_end, environment)
             except Exception as e:
-                print(f"Failed to fetch data for {exchange}:{symbol} {period} [{range_start}-{range_end}]: {e}")
+                print(f"Failed to fetch data for {exchange}:{symbol} {period} [{range_start}-{range_end}] {environment}: {e}")
 
         # Return complete data
         return self.db.query(CryptoKline).filter(
@@ -215,7 +225,8 @@ class KlineRepository:
                 CryptoKline.symbol == symbol,
                 CryptoKline.period == period,
                 CryptoKline.timestamp >= start_ts,
-                CryptoKline.timestamp <= end_ts
+                CryptoKline.timestamp <= end_ts,
+                CryptoKline.environment == environment
             )
         ).order_by(CryptoKline.timestamp).all()
 
@@ -232,7 +243,7 @@ class KlineRepository:
         }
         return period_map.get(period)
 
-    def _fetch_and_store_range(self, exchange: str, symbol: str, period: str, start_ts: int, end_ts: int):
+    def _fetch_and_store_range(self, exchange: str, symbol: str, period: str, start_ts: int, end_ts: int, environment: str = "mainnet"):
         """
         Fetch K-line data from exchange API and store to database
 

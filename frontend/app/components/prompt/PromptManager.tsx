@@ -3,10 +3,13 @@ import { toast } from 'react-hot-toast'
 import {
   getPromptTemplates,
   updatePromptTemplate,
-  restorePromptTemplate,
   upsertPromptBinding,
   deletePromptBinding,
   getAccounts,
+  createPromptTemplate,
+  copyPromptTemplate,
+  deletePromptTemplate,
+  updatePromptTemplateName,
   PromptTemplate,
   PromptBinding,
   TradingAccount,
@@ -22,6 +25,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import PromptPreviewDialog from './PromptPreviewDialog'
 
 interface BindingFormState {
@@ -40,8 +51,9 @@ export default function PromptManager() {
   const [bindings, setBindings] = useState<PromptBinding[]>([])
   const [accounts, setAccounts] = useState<TradingAccount[]>([])
   const [accountsLoading, setAccountsLoading] = useState(false)
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<number | null>(null)
   const [templateDraft, setTemplateDraft] = useState<string>('')
+  const [nameDraft, setNameDraft] = useState<string>('')
   const [descriptionDraft, setDescriptionDraft] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -49,9 +61,20 @@ export default function PromptManager() {
   const [bindingForm, setBindingForm] = useState<BindingFormState>(DEFAULT_BINDING_FORM)
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false)
 
+  // New template dialog
+  const [newTemplateDialogOpen, setNewTemplateDialogOpen] = useState(false)
+  const [newTemplateName, setNewTemplateName] = useState('')
+  const [newTemplateDescription, setNewTemplateDescription] = useState('')
+  const [creating, setCreating] = useState(false)
+
+  // Copy template dialog
+  const [copyDialogOpen, setCopyDialogOpen] = useState(false)
+  const [copyName, setCopyName] = useState('')
+  const [copying, setCopying] = useState(false)
+
   const selectedTemplate = useMemo(
-    () => templates.find((tpl) => tpl.key === selectedKey) || null,
-    [templates, selectedKey],
+    () => templates.find((tpl) => tpl.id === selectedId) || null,
+    [templates, selectedId],
   )
 
   const loadTemplates = async () => {
@@ -61,15 +84,17 @@ export default function PromptManager() {
       setTemplates(data.templates)
       setBindings(data.bindings)
 
-      if (!selectedKey && data.templates.length > 0) {
+      if (!selectedId && data.templates.length > 0) {
         const first = data.templates[0]
-        setSelectedKey(first.key)
+        setSelectedId(first.id)
         setTemplateDraft(first.templateText)
+        setNameDraft(first.name)
         setDescriptionDraft(first.description ?? '')
-      } else if (selectedKey) {
-        const tpl = data.templates.find((item) => item.key === selectedKey)
+      } else if (selectedId) {
+        const tpl = data.templates.find((item) => item.id === selectedId)
         if (tpl) {
           setTemplateDraft(tpl.templateText)
+          setNameDraft(tpl.name)
           setDescriptionDraft(tpl.description ?? '')
         }
       }
@@ -100,24 +125,40 @@ export default function PromptManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleSelectTemplate = (key: string) => {
-    setSelectedKey(key)
-    const tpl = templates.find((item) => item.key === key)
+  const handleSelectTemplate = (id: string) => {
+    const numId = Number(id)
+    setSelectedId(numId)
+    const tpl = templates.find((item) => item.id === numId)
     setTemplateDraft(tpl?.templateText ?? '')
+    setNameDraft(tpl?.name ?? '')
     setDescriptionDraft(tpl?.description ?? '')
   }
 
   const handleSaveTemplate = async () => {
-    if (!selectedKey) return
+    if (!selectedTemplate) return
     setSaving(true)
     try {
-      const updated = await updatePromptTemplate(selectedKey, {
+      const updated = await updatePromptTemplate(selectedTemplate.key, {
         templateText: templateDraft,
         description: descriptionDraft,
         updatedBy: 'ui',
       })
+
+      // Also update name if changed
+      if (nameDraft !== selectedTemplate.name) {
+        await updatePromptTemplateName(selectedTemplate.id, {
+          name: nameDraft,
+          description: descriptionDraft,
+          updatedBy: 'ui',
+        })
+      }
+
       setTemplates((prev) =>
-        prev.map((tpl) => (tpl.key === selectedKey ? { ...tpl, ...updated } : tpl)),
+        prev.map((tpl) =>
+          tpl.id === selectedTemplate.id
+            ? { ...tpl, ...updated, name: nameDraft, description: descriptionDraft }
+            : tpl,
+        ),
       )
       toast.success('Prompt template saved')
     } catch (err) {
@@ -128,22 +169,99 @@ export default function PromptManager() {
     }
   }
 
-  const handleRestoreTemplate = async () => {
-    if (!selectedKey) return
-    setSaving(true)
+  const handleCreateTemplate = async () => {
+    if (!newTemplateName.trim()) {
+      toast.error('Please enter a template name')
+      return
+    }
+
+    setCreating(true)
     try {
-      const restored = await restorePromptTemplate(selectedKey, 'ui')
-      setTemplates((prev) =>
-        prev.map((tpl) => (tpl.key === selectedKey ? { ...tpl, ...restored } : tpl)),
-      )
-      setTemplateDraft(restored.templateText)
-      setDescriptionDraft(restored.description ?? '')
-      toast.success('Prompt template restored')
+      const created = await createPromptTemplate({
+        name: newTemplateName,
+        description: newTemplateDescription,
+        createdBy: 'ui',
+      })
+
+      setTemplates((prev) => [created, ...prev])
+      setSelectedId(created.id)
+      setTemplateDraft(created.templateText)
+      setNameDraft(created.name)
+      setDescriptionDraft(created.description ?? '')
+
+      setNewTemplateDialogOpen(false)
+      setNewTemplateName('')
+      setNewTemplateDescription('')
+      toast.success('Template created')
     } catch (err) {
       console.error(err)
-      toast.error(err instanceof Error ? err.message : 'Failed to restore prompt template')
+      toast.error(err instanceof Error ? err.message : 'Failed to create template')
     } finally {
-      setSaving(false)
+      setCreating(false)
+    }
+  }
+
+  const handleCopyTemplate = async () => {
+    if (!selectedTemplate) return
+
+    setCopying(true)
+    try {
+      const copied = await copyPromptTemplate(selectedTemplate.id, {
+        newName: copyName || undefined,
+        createdBy: 'ui',
+      })
+
+      setTemplates((prev) => [copied, ...prev])
+      setSelectedId(copied.id)
+      setTemplateDraft(copied.templateText)
+      setNameDraft(copied.name)
+      setDescriptionDraft(copied.description ?? '')
+
+      setCopyDialogOpen(false)
+      setCopyName('')
+      toast.success('Template copied')
+    } catch (err) {
+      console.error(err)
+      toast.error(err instanceof Error ? err.message : 'Failed to copy template')
+    } finally {
+      setCopying(false)
+    }
+  }
+
+  const handleDeleteTemplate = async () => {
+    if (!selectedTemplate) return
+
+    if (selectedTemplate.isSystem === 'true') {
+      toast.error('Cannot delete system templates')
+      return
+    }
+
+    if (!confirm(`Delete template "${selectedTemplate.name}"?`)) {
+      return
+    }
+
+    try {
+      await deletePromptTemplate(selectedTemplate.id)
+      setTemplates((prev) => prev.filter((tpl) => tpl.id !== selectedTemplate.id))
+
+      // Select first available template
+      const remaining = templates.filter((tpl) => tpl.id !== selectedTemplate.id)
+      if (remaining.length > 0) {
+        setSelectedId(remaining[0].id)
+        setTemplateDraft(remaining[0].templateText)
+        setNameDraft(remaining[0].name)
+        setDescriptionDraft(remaining[0].description ?? '')
+      } else {
+        setSelectedId(null)
+        setTemplateDraft('')
+        setNameDraft('')
+        setDescriptionDraft('')
+      }
+
+      toast.success('Template deleted')
+    } catch (err) {
+      console.error(err)
+      toast.error(err instanceof Error ? err.message : 'Failed to delete template')
     }
   }
 
@@ -207,6 +325,7 @@ export default function PromptManager() {
   useEffect(() => {
     if (selectedTemplate) {
       setTemplateDraft(selectedTemplate.templateText)
+      setNameDraft(selectedTemplate.name)
       setDescriptionDraft(selectedTemplate.description ?? '')
     }
   }, [selectedTemplate])
@@ -225,14 +344,43 @@ export default function PromptManager() {
         <div className="flex-1 flex flex-col h-full gap-4 overflow-hidden">
           <Card className="flex-1 flex flex-col h-full overflow-hidden">
             <CardHeader>
-              <CardTitle className="text-base">Prompt Template Editor</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Prompt Template Editor</CardTitle>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setNewTemplateDialogOpen(true)}
+                  >
+                    ➕ New
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setCopyDialogOpen(true)}
+                    disabled={!selectedTemplate}
+                  >
+                    📋 Copy
+                  </Button>
+                  {selectedTemplate && selectedTemplate.isSystem !== 'true' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleDeleteTemplate}
+                      className="text-destructive"
+                    >
+                      🗑️ Delete
+                    </Button>
+                  )}
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-4 h-[100%] flex-1 overflow-hidden">
               {/* Template Selection Dropdown */}
               <div>
                 <label className="text-xs uppercase text-muted-foreground">Template</label>
                 <Select
-                  value={selectedKey || ''}
+                  value={selectedId ? String(selectedId) : ''}
                   onValueChange={handleSelectTemplate}
                   disabled={loading}
                 >
@@ -241,15 +389,31 @@ export default function PromptManager() {
                   </SelectTrigger>
                   <SelectContent>
                     {templates.map((tpl) => (
-                      <SelectItem key={tpl.id} value={tpl.key}>
+                      <SelectItem key={tpl.id} value={String(tpl.id)}>
                         <div className="flex flex-col items-start">
-                          <span className="font-semibold">{tpl.name}</span>
+                          <span className="font-semibold">
+                            {tpl.name}
+                            {tpl.isSystem === 'true' && (
+                              <span className="ml-2 text-xs text-muted-foreground">[System]</span>
+                            )}
+                          </span>
                           <span className="text-xs text-muted-foreground">{tpl.key}</span>
                         </div>
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Name Input */}
+              <div>
+                <label className="text-xs uppercase text-muted-foreground">Template Name</label>
+                <Input
+                  value={nameDraft}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                  placeholder="Template name"
+                  disabled={!selectedTemplate || saving}
+                />
               </div>
 
               {/* Description Input */}
@@ -284,13 +448,6 @@ export default function PromptManager() {
                   💡 Preview Filled
                 </Button>
                 <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={handleRestoreTemplate}
-                    disabled={!selectedTemplate || saving}
-                  >
-                    Restore Default
-                  </Button>
                   <Button onClick={handleSaveTemplate} disabled={!selectedTemplate || saving}>
                     Save Template
                   </Button>
@@ -441,8 +598,79 @@ export default function PromptManager() {
           onOpenChange={setPreviewDialogOpen}
           templateKey={selectedTemplate.key}
           templateName={selectedTemplate.name}
+          templateText={templateDraft}
         />
       )}
+
+      {/* New Template Dialog */}
+      <Dialog open={newTemplateDialogOpen} onOpenChange={setNewTemplateDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create New Template</DialogTitle>
+            <DialogDescription>
+              Create a new prompt template from scratch. It will be initialized with the default
+              template content.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <label className="text-sm font-medium">Template Name</label>
+              <Input
+                value={newTemplateName}
+                onChange={(e) => setNewTemplateName(e.target.value)}
+                placeholder="My Custom Template"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">Description (Optional)</label>
+              <Input
+                value={newTemplateDescription}
+                onChange={(e) => setNewTemplateDescription(e.target.value)}
+                placeholder="Description of this template"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewTemplateDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateTemplate} disabled={creating}>
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Copy Template Dialog */}
+      <Dialog open={copyDialogOpen} onOpenChange={setCopyDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Copy Template</DialogTitle>
+            <DialogDescription>
+              Create a copy of "{selectedTemplate?.name}". You can specify a new name or leave
+              blank to auto-generate.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <label className="text-sm font-medium">New Name (Optional)</label>
+              <Input
+                value={copyName}
+                onChange={(e) => setCopyName(e.target.value)}
+                placeholder={`${selectedTemplate?.name} (Copy)`}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCopyDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCopyTemplate} disabled={copying}>
+              Copy
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

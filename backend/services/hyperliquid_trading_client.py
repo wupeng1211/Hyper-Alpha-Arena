@@ -144,6 +144,7 @@ class HyperliquidTradingClient:
         # Initialize official Hyperliquid SDK (for order placement)
         try:
             from hyperliquid.exchange import Exchange
+            from hyperliquid.info import Info
             from eth_account import Account as EthAccount
 
             # Create eth_account wallet for SDK
@@ -156,8 +157,14 @@ class HyperliquidTradingClient:
                 account_address=self.wallet_address
             )
 
+            # Initialize SDK Info (for querying user fills and historical orders)
+            self.sdk_info = Info(
+                base_url=self.api_url,
+                skip_ws=True  # We don't need WebSocket for historical data queries
+            )
+
             logger.info(
-                f"Official SDK Exchange initialized: account_id={account_id} "
+                f"Official SDK Exchange + Info initialized: account_id={account_id} "
                 f"environment={environment.upper()} wallet={self.wallet_address}"
             )
         except Exception as e:
@@ -357,7 +364,7 @@ class HyperliquidTradingClient:
 
     def get_positions(self, db: Session) -> List[Dict[str, Any]]:
         """
-        Get all open positions from Hyperliquid
+        Get all open positions from Hyperliquid with timing information
 
         Args:
             db: Database session
@@ -372,6 +379,10 @@ class HyperliquidTradingClient:
                 - margin_used: Margin used for this position
                 - liquidation_px: Liquidation price
                 - leverage: Current leverage
+                - opened_at: Timestamp when position was opened (milliseconds)
+                - opened_at_str: Human-readable opened time
+                - holding_duration_seconds: How long position has been held
+                - holding_duration_str: Human-readable holding duration
 
         Raises:
             EnvironmentMismatchError: If environment validation fails
@@ -390,6 +401,15 @@ class HyperliquidTradingClient:
             print(f"=== END CCXT RAW DATA ===")
             logger.info(f"CCXT RAW POSITIONS DATA: {positions_raw}")
 
+            # Get user fills to calculate position opened times
+            user_fills = []
+            try:
+                user_fills = self._get_user_fills(db)
+                logger.info(f"Retrieved {len(user_fills)} user fills for position timing calculation")
+            except Exception as fills_error:
+                logger.warning(f"Failed to get user fills for position timing: {fills_error}")
+                # Continue without timing information
+
             # Transform CCXT positions to our format
             positions = []
             for pos in positions_raw:
@@ -401,8 +421,38 @@ class HyperliquidTradingClient:
                     position_size = 0.0
                 side = pos.get('side', '').capitalize()
 
+                coin = info_position.get('coin')
+
+                # Calculate position timing
+                opened_at = None
+                opened_at_str = None
+                holding_duration_seconds = None
+                holding_duration_str = None
+
+                if user_fills and coin and abs(position_size) > 1e-8:
+                    opened_at = self._calculate_position_opened_time(coin, position_size, user_fills)
+                    if opened_at:
+                        from datetime import datetime, timezone
+                        import time as time_module
+
+                        # Use UTC time (consistent with session context display)
+                        utc_dt = datetime.fromtimestamp(opened_at / 1000, tz=timezone.utc)
+                        opened_at_str = utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+                        # Calculate holding duration
+                        current_time_ms = int(time_module.time() * 1000)
+                        holding_duration_seconds = (current_time_ms - opened_at) / 1000
+
+                        # Format duration as human-readable
+                        hours = int(holding_duration_seconds // 3600)
+                        minutes = int((holding_duration_seconds % 3600) // 60)
+                        if hours > 0:
+                            holding_duration_str = f"{hours}h {minutes}m"
+                        else:
+                            holding_duration_str = f"{minutes}m"
+
                 positions.append({
-                    'coin': info_position.get('coin'),
+                    'coin': coin,
                     'szi': position_size,  # Correct signed size
                     'entry_px': float(info_position.get('entryPx', 0)),
                     'position_value': float(info_position.get('positionValue', 0)),
@@ -411,6 +461,12 @@ class HyperliquidTradingClient:
                     'liquidation_px': float(info_position.get('liquidationPx') or 0),
                     'leverage': float((info_position.get('leverage') or {}).get('value', 0)),
                     'side': side,  # Correct direction from CCXT
+
+                    # Position timing information (NEW)
+                    'opened_at': opened_at,
+                    'opened_at_str': opened_at_str,
+                    'holding_duration_seconds': holding_duration_seconds,
+                    'holding_duration_str': holding_duration_str,
 
                     # Hyperliquid specific fields
                     'return_on_equity': float(info_position.get('returnOnEquity', 0)),
@@ -455,6 +511,258 @@ class HyperliquidTradingClient:
             )
             logger.error(f"Failed to get positions: {e}", exc_info=True)
             raise
+
+    def _get_user_fills(self, db: Session) -> List[Dict[str, Any]]:
+        """
+        Get all user fills (trade executions) from Hyperliquid SDK
+
+        This method uses Hyperliquid SDK's Info.user_fills() to retrieve
+        ALL historical trade executions for this wallet address.
+
+        Args:
+            db: Database session (for environment validation)
+
+        Returns:
+            List of fill dicts with fields:
+                - coin: Symbol name
+                - side: "A" (ask/sell) or "B" (bid/buy)
+                - px: Execution price
+                - sz: Size filled
+                - time: Execution timestamp (milliseconds)
+                - startPosition: Position before this fill
+                - dir: Direction ("Open Long", "Close Long", etc.)
+                - closedPnl: Realized PnL if position closed
+                - oid: Order ID
+
+        Raises:
+            EnvironmentMismatchError: If environment validation fails
+        """
+        self._validate_environment(db)
+
+        try:
+            logger.info(f"Fetching user fills for wallet {self.wallet_address} on {self.environment}")
+
+            # Use SDK Info to get all user fills
+            fills = self.sdk_info.user_fills(self.wallet_address)
+
+            logger.debug(f"Retrieved {len(fills)} fills for wallet {self.wallet_address}")
+
+            self._record_exchange_action(
+                action_type="fetch_user_fills",
+                status="success",
+                symbol=None,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "environment": self.environment,
+                },
+                response_payload=None,
+            )
+
+            return fills
+
+        except Exception as e:
+            self._record_exchange_action(
+                action_type="fetch_user_fills",
+                status="error",
+                symbol=None,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "environment": self.environment,
+                },
+                response_payload=None,
+                error_message=str(e),
+            )
+            logger.error(f"Failed to get user fills: {e}", exc_info=True)
+            raise
+
+    def _get_historical_orders(self, db: Session) -> List[Dict[str, Any]]:
+        """
+        Get historical orders from Hyperliquid SDK
+
+        This method uses Hyperliquid SDK's Info.historical_orders() to retrieve
+        up to 2000 most recent orders for this wallet address.
+
+        Args:
+            db: Database session (for environment validation)
+
+        Returns:
+            List of order dicts with status, fills, and execution details
+
+        Raises:
+            EnvironmentMismatchError: If environment validation fails
+        """
+        self._validate_environment(db)
+
+        try:
+            logger.info(f"Fetching historical orders for wallet {self.wallet_address} on {self.environment}")
+
+            # Use SDK Info to get historical orders (up to 2000 most recent)
+            orders = self.sdk_info.historical_orders(self.wallet_address)
+
+            logger.debug(f"Retrieved {len(orders)} historical orders for wallet {self.wallet_address}")
+
+            self._record_exchange_action(
+                action_type="fetch_historical_orders",
+                status="success",
+                symbol=None,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "environment": self.environment,
+                },
+                response_payload=None,
+            )
+
+            return orders
+
+        except Exception as e:
+            self._record_exchange_action(
+                action_type="fetch_historical_orders",
+                status="error",
+                symbol=None,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "environment": self.environment,
+                },
+                response_payload=None,
+                error_message=str(e),
+            )
+            logger.error(f"Failed to get historical orders: {e}", exc_info=True)
+            raise
+
+    def _calculate_position_opened_time(self, symbol: str, current_position_size: float, fills: List[Dict[str, Any]]) -> Optional[int]:
+        """
+        Calculate when a position was opened based on user fills
+
+        This method walks backwards through fills starting from the current position,
+        subtracting each fill's effect until we reach the point where the position
+        was first opened (when going back further would cross zero or change direction).
+
+        Args:
+            symbol: Asset symbol (e.g., "BTC")
+            current_position_size: Current position size (signed: positive=long, negative=short)
+            fills: List of all user fills (from _get_user_fills)
+
+        Returns:
+            Timestamp in milliseconds when position was first opened,
+            or None if no fills found for this symbol
+        """
+        if not fills or abs(current_position_size) < 1e-8:
+            return None
+
+        # Filter fills for this symbol and sort by time (newest first)
+        symbol_fills = [f for f in fills if f.get('coin') == symbol]
+        symbol_fills.sort(key=lambda x: x.get('time', 0), reverse=True)
+
+        if not symbol_fills:
+            return None
+
+        # Start from current position and walk backwards
+        # Subtract each fill's effect to find when position started
+        position_tracker = current_position_size
+        earliest_time = None
+
+        for fill in symbol_fills:
+            sz = float(fill.get('sz', 0))
+            side = fill.get('side', '')
+
+            # Calculate what the position was BEFORE this fill
+            # side "B" = buy (adds to position), "A" = sell (reduces position)
+            if side == "B":
+                position_before = position_tracker - sz
+            elif side == "A":
+                position_before = position_tracker + sz
+            else:
+                continue
+
+            # Check if going back past this fill would cross zero or change direction
+            # If so, this fill is where the current position started
+            if abs(position_before) < 1e-8:
+                # Position was zero before this fill - this is the opening fill
+                earliest_time = fill.get('time')
+                break
+            elif (position_tracker > 0 and position_before < 0) or (position_tracker < 0 and position_before > 0):
+                # Position changed direction - this fill opened the current position
+                earliest_time = fill.get('time')
+                break
+            else:
+                # This fill is part of the current position, keep going back
+                earliest_time = fill.get('time')
+                position_tracker = position_before
+
+        return earliest_time
+
+    def get_recent_closed_trades(self, db: Session, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get recent closed trades summary from historical orders
+
+        This method analyzes historical orders to find recently closed positions
+        and returns a summary with:
+        - Symbol
+        - Entry/exit time and prices
+        - Holding duration
+        - Realized PnL
+        - Direction (long/short)
+
+        Args:
+            db: Database session (for environment validation)
+            limit: Maximum number of closed trades to return (default 5)
+
+        Returns:
+            List of closed trade summaries, sorted by close time (most recent first)
+
+        Raises:
+            EnvironmentMismatchError: If environment validation fails
+        """
+        self._validate_environment(db)
+
+        try:
+            # Get user fills which contain closedPnl information
+            fills = self._get_user_fills(db)
+
+            # Filter for fills that closed positions (have closedPnl)
+            closed_fills = []
+            for fill in fills:
+                closed_pnl = fill.get('closedPnl')
+                if closed_pnl and closed_pnl != '0.0':
+                    closed_fills.append(fill)
+
+            # Sort by time (newest first) and limit
+            closed_fills.sort(key=lambda x: x.get('time', 0), reverse=True)
+            closed_fills = closed_fills[:limit]
+
+            # Build trade summaries
+            trades = []
+            for fill in closed_fills:
+                from datetime import datetime, timezone
+
+                close_time_ms = fill.get('time', 0)
+                # Use UTC time (consistent with session context display)
+                utc_dt = datetime.fromtimestamp(close_time_ms / 1000, tz=timezone.utc)
+                close_time = utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+                trade = {
+                    'symbol': fill.get('coin'),
+                    'side': 'Long' if fill.get('side') == 'A' else 'Short',  # Closing long = selling (A)
+                    'close_price': float(fill.get('px', 0)),
+                    'size': float(fill.get('sz', 0)),
+                    'close_time': close_time,
+                    'close_timestamp': close_time_ms,
+                    'realized_pnl': float(fill.get('closedPnl', 0)),
+                    'direction': fill.get('dir', ''),
+                }
+
+                trades.append(trade)
+
+            logger.info(f"Found {len(trades)} recent closed trades")
+            return trades
+
+        except Exception as e:
+            logger.error(f"Failed to get recent closed trades: {e}", exc_info=True)
+            return []
 
     def place_order(
         self,

@@ -1,6 +1,8 @@
+import Cookies from 'js-cookie'
+
 // API configuration
-const API_BASE_URL = process.env.NODE_ENV === 'production' 
-  ? '/api' 
+const API_BASE_URL = process.env.NODE_ENV === 'production'
+  ? '/api'
   : '/api'  // Use proxy, don't hardcode port
 
 // Hardcoded user for paper trading (matches backend initialization)
@@ -200,7 +202,11 @@ export interface PromptTemplate {
   description?: string | null
   templateText: string
   systemTemplateText: string
+  isSystem: string
+  isDeleted: string
+  createdBy: string
   updatedBy?: string | null
+  createdAt?: string | null
   updatedAt?: string | null
 }
 
@@ -223,6 +229,24 @@ export interface PromptListResponse {
 
 export interface PromptTemplateUpdateRequest {
   templateText: string
+  description?: string
+  updatedBy?: string
+}
+
+export interface PromptTemplateCreateRequest {
+  name: string
+  description?: string
+  templateText?: string
+  createdBy?: string
+}
+
+export interface PromptTemplateCopyRequest {
+  newName?: string
+  createdBy?: string
+}
+
+export interface PromptTemplateNameUpdateRequest {
+  name: string
   description?: string
   updatedBy?: string
 }
@@ -250,14 +274,40 @@ export async function updatePromptTemplate(
   return response.json()
 }
 
-export async function restorePromptTemplate(
-  key: string,
-  updatedBy?: string,
+export async function createPromptTemplate(
+  payload: PromptTemplateCreateRequest,
 ): Promise<PromptTemplate> {
-  const body = updatedBy ? { updatedBy } : {}
-  const response = await apiRequest(`/prompts/${encodeURIComponent(key)}/restore`, {
+  const response = await apiRequest('/prompts', {
     method: 'POST',
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
+  })
+  return response.json()
+}
+
+export async function copyPromptTemplate(
+  templateId: number,
+  payload: PromptTemplateCopyRequest,
+): Promise<PromptTemplate> {
+  const response = await apiRequest(`/prompts/${templateId}/copy`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  return response.json()
+}
+
+export async function deletePromptTemplate(templateId: number): Promise<void> {
+  await apiRequest(`/prompts/${templateId}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function updatePromptTemplateName(
+  templateId: number,
+  payload: PromptTemplateNameUpdateRequest,
+): Promise<PromptTemplate> {
+  const response = await apiRequest(`/prompts/${templateId}/name`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   })
   return response.json()
 }
@@ -279,7 +329,8 @@ export async function deletePromptBinding(bindingId: number): Promise<void> {
 }
 
 export interface PromptPreviewRequest {
-  promptTemplateKey: string
+  templateText?: string  // Optional: Use this template text directly (for preview before save)
+  promptTemplateKey?: string  // Optional: Fallback to database template if templateText not provided
   accountIds: number[]
   symbols?: string[]
 }
@@ -755,15 +806,29 @@ export interface MembershipResponse {
 }
 
 // Get membership information from external membership service
-// This function calls the membership API and relies on browser cookies for authentication
+// IMPORTANT: This function supports both same-domain and cross-domain access
+// - Same-domain (arena.akooi.com): Uses cookies automatically
+// - Cross-domain (localhost/custom domains): Uses Authorization header with arena_token
+// This ensures paid users can access membership features regardless of deployment domain
 export async function getMembershipInfo(): Promise<MembershipResponse> {
   try {
+    // Get arena_token for cross-domain authentication
+    // This is the same Casdoor access token used for login
+    const token = Cookies.get('arena_token')
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+
+    // Add Authorization header if token exists (critical for localhost/custom domain deployments)
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
     const response = await fetch('https://www.akooi.com/api/membership/me', {
       method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      credentials: 'include',  // Still include credentials for same-domain cookie support
+      headers,
     })
 
     if (!response.ok) {

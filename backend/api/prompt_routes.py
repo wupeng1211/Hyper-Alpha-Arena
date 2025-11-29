@@ -11,10 +11,12 @@ from database.models import PromptTemplate, Account
 from schemas.prompt import (
     PromptListResponse,
     PromptTemplateUpdateRequest,
-    PromptTemplateRestoreRequest,
     PromptTemplateResponse,
     PromptBindingUpsertRequest,
     PromptBindingResponse,
+    PromptTemplateCopyRequest,
+    PromptTemplateCreateRequest,
+    PromptTemplateNameUpdateRequest,
 )
 
 
@@ -80,20 +82,81 @@ def update_prompt_template(
     return PromptTemplateResponse.from_orm(template)
 
 
+# Restore endpoint removed - dangerous operation that overwrites user customizations
+
+
+@router.post("", response_model=PromptTemplateResponse, response_model_exclude_none=True)
+@router.post("/", response_model=PromptTemplateResponse, response_model_exclude_none=True)
+def create_prompt_template(
+    payload: PromptTemplateCreateRequest,
+    db: Session = Depends(get_db),
+) -> PromptTemplateResponse:
+    """Create a new user-defined prompt template"""
+    try:
+        template = prompt_repo.create_user_template(
+            db,
+            name=payload.name,
+            description=payload.description,
+            template_text=payload.template_text,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return PromptTemplateResponse.from_orm(template)
+
+
 @router.post(
-    "/{key}/restore",
+    "/{template_id}/copy",
     response_model=PromptTemplateResponse,
     response_model_exclude_none=True,
 )
-def restore_prompt_template(
-    key: str,
-    payload: PromptTemplateRestoreRequest,
+def copy_prompt_template(
+    template_id: int,
+    payload: PromptTemplateCopyRequest,
     db: Session = Depends(get_db),
 ) -> PromptTemplateResponse:
+    """Copy an existing template to create a new one"""
     try:
-        template = prompt_repo.restore_template(
+        template = prompt_repo.copy_template(
             db,
-            key=key,
+            template_id=template_id,
+            new_name=payload.new_name,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return PromptTemplateResponse.from_orm(template)
+
+
+@router.delete("/{template_id}")
+def delete_prompt_template(template_id: int, db: Session = Depends(get_db)) -> dict:
+    """Soft delete a prompt template"""
+    try:
+        prompt_repo.soft_delete_template(db, template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Template deleted"}
+
+
+@router.patch(
+    "/{template_id}/name",
+    response_model=PromptTemplateResponse,
+    response_model_exclude_none=True,
+)
+def update_prompt_template_name(
+    template_id: int,
+    payload: PromptTemplateNameUpdateRequest,
+    db: Session = Depends(get_db),
+) -> PromptTemplateResponse:
+    """Update template name and description"""
+    try:
+        template = prompt_repo.update_template_name(
+            db,
+            template_id=template_id,
+            name=payload.name,
+            description=payload.description,
             updated_by=payload.updated_by,
         )
     except ValueError as exc:
@@ -166,7 +229,8 @@ def preview_prompt(
 
     Payload:
     {
-        "promptTemplateKey": "pro",
+        "templateText": "...",  # Optional: Use this template text directly (for preview before save)
+        "promptTemplateKey": "pro",  # Optional: Fallback to database template if templateText not provided
         "accountIds": [1, 2],
         "symbols": ["BTC", "ETH"]
     }
@@ -202,6 +266,8 @@ def preview_prompt(
 
     logger = logging.getLogger(__name__)
 
+    # Priority: use templateText if provided (for preview before save), otherwise query from database
+    template_text = payload.get("templateText")
     prompt_key = payload.get("promptTemplateKey", "default")
     account_ids = payload.get("accountIds", [])
 
@@ -220,10 +286,16 @@ def preview_prompt(
     if not account_ids:
         raise HTTPException(status_code=400, detail="At least one account must be selected")
 
-    # Get template
-    template = prompt_repo.get_template_by_key(db, prompt_key)
-    if not template:
-        raise HTTPException(status_code=404, detail=f"Prompt template '{prompt_key}' not found")
+    # Get template text: use provided templateText or query from database
+    if not template_text:
+        # Fallback: query from database using promptTemplateKey
+        template = prompt_repo.get_template_by_key(db, prompt_key)
+        if not template:
+            raise HTTPException(status_code=404, detail=f"Prompt template '{prompt_key}' not found")
+        template_text = template.template_text
+        logger.info(f"Preview: Using database template '{prompt_key}'")
+    else:
+        logger.info(f"Preview: Using provided templateText (length: {len(template_text)})")
 
     # Get news
     try:
@@ -244,8 +316,12 @@ def preview_prompt(
             logger.warning(f"Account {account_id} not found, skipping")
             continue
 
-        # Check if account uses Hyperliquid
-        hyperliquid_environment = getattr(account, "hyperliquid_environment", None)
+        # Check if account uses Hyperliquid - ONLY use global environment
+        from services.hyperliquid_environment import get_global_trading_mode
+        hyperliquid_environment = get_global_trading_mode(db)
+
+        # NOTE: Account-level environment setting is deprecated
+        # All accounts MUST follow the global trading mode
 
         hyperliquid_state = None
 
@@ -254,7 +330,7 @@ def preview_prompt(
             try:
                 from services.hyperliquid_environment import get_hyperliquid_client
 
-                client = get_hyperliquid_client(db, account_id)
+                client = get_hyperliquid_client(db, account_id, override_environment=hyperliquid_environment)
                 account_state = client.get_account_state(db)
                 positions = client.get_positions(db)
 
@@ -319,7 +395,7 @@ def preview_prompt(
         prices: Dict[str, float] = {}
         for sym in active_symbols:
             try:
-                prices[sym] = get_last_price(sym, "CRYPTO")
+                prices[sym] = get_last_price(sym, "CRYPTO", environment=hyperliquid_environment or "mainnet")
             except Exception as err:
                 logger.warning(f"Failed to get price for {sym}: {err}")
                 prices[sym] = 0.0
@@ -335,6 +411,9 @@ def preview_prompt(
             logger.warning(f"Failed to get sampling interval: {e}")
 
         sampling_data = _build_multi_symbol_sampling_data(active_symbols, sampling_pool, sampling_interval)
+        # IMPORTANT: _build_prompt_context is the ONLY function that builds prompt context.
+        # It now handles K-line and indicator variables internally when template_text is provided.
+        # DO NOT add separate K-line processing here - it will cause inconsistencies.
         context = _build_prompt_context(
             account,
             portfolio,
@@ -343,14 +422,17 @@ def preview_prompt(
             None,
             None,
             hyperliquid_state,
+            db=db,
             symbol_metadata=symbol_metadata_map,
             symbol_order=active_symbols,
             sampling_interval=sampling_interval,
+            environment=hyperliquid_environment or "mainnet",
+            template_text=template_text,
         )
         context["sampling_data"] = sampling_data
 
         try:
-            filled_prompt = template.template_text.format_map(SafeDict(context))
+            filled_prompt = template_text.format_map(SafeDict(context))
         except Exception as err:
             logger.error(f"Failed to fill prompt for {account.name}: {err}")
             filled_prompt = f"Error filling prompt: {err}"

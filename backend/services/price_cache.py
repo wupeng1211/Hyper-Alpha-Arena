@@ -15,17 +15,17 @@ class PriceCache:
     """In-memory price cache with TTL and rolling history retention."""
 
     def __init__(self, ttl_seconds: int = 30, history_seconds: int = 3600):
-        # key: (symbol, market), value: (price, timestamp)
-        self.cache: Dict[Tuple[str, str], Tuple[float, float]] = {}
-        # key: (symbol, market), deque of (timestamp, price)
-        self.history: Dict[Tuple[str, str], Deque[Tuple[float, float]]] = {}
+        # key: (symbol, market, environment), value: (price, timestamp)
+        self.cache: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
+        # key: (symbol, market, environment), deque of (timestamp, price)
+        self.history: Dict[Tuple[str, str, str], Deque[Tuple[float, float]]] = {}
         self.ttl_seconds = ttl_seconds
         self.history_seconds = history_seconds
         self.lock = Lock()
 
-    def get(self, symbol: str, market: str) -> Optional[float]:
+    def get(self, symbol: str, market: str, environment: str = "mainnet") -> Optional[float]:
         """Get cached price if still within TTL."""
-        key = (symbol, market)
+        key = (symbol, market, environment)
         current_time = time.time()
 
         with self.lock:
@@ -35,17 +35,17 @@ class PriceCache:
 
             price, timestamp = entry
             if current_time - timestamp < self.ttl_seconds:
-                logger.debug("Cache hit for %s.%s: %s", symbol, market, price)
+                logger.debug("Cache hit for %s.%s.%s: %s", symbol, market, environment, price)
                 return price
 
             # TTL expired – purge entry
             del self.cache[key]
-            logger.debug("Cache expired for %s.%s", symbol, market)
+            logger.debug("Cache expired for %s.%s.%s", symbol, market, environment)
             return None
 
-    def record(self, symbol: str, market: str, price: float, timestamp: Optional[float] = None) -> None:
+    def record(self, symbol: str, market: str, price: float, timestamp: Optional[float] = None, environment: str = "mainnet") -> None:
         """Record price into short cache and long-term history."""
-        key = (symbol, market)
+        key = (symbol, market, environment)
         event_time = timestamp or time.time()
 
         with self.lock:
@@ -58,7 +58,7 @@ class PriceCache:
             while history_queue and history_queue[0][0] < cutoff:
                 history_queue.popleft()
 
-        logger.debug("Recorded price update for %s.%s: %s @ %s", symbol, market, price, event_time)
+        logger.debug("Recorded price update for %s.%s.%s: %s @ %s", symbol, market, environment, price, event_time)
 
     def clear_expired(self) -> None:
         """Remove expired cache entries and prune history."""
@@ -101,9 +101,9 @@ class PriceCache:
             "history_seconds": self.history_seconds,
         }
 
-    def get_history(self, symbol: str, market: str) -> List[Tuple[float, float]]:
+    def get_history(self, symbol: str, market: str, environment: str = "mainnet") -> List[Tuple[float, float]]:
         """Return rolling history for symbol within retention window."""
-        key = (symbol, market)
+        key = (symbol, market, environment)
         with self.lock:
             queue = self.history.get(key)
             if not queue:
@@ -115,24 +115,24 @@ class PriceCache:
 price_cache = PriceCache(ttl_seconds=30, history_seconds=3600)
 
 
-def get_cached_price(symbol: str, market: str = "CRYPTO") -> Optional[float]:
+def get_cached_price(symbol: str, market: str = "CRYPTO", environment: str = "mainnet") -> Optional[float]:
     """Get price from cache if available."""
-    return price_cache.get(symbol, market)
+    return price_cache.get(symbol, market, environment)
 
 
-def cache_price(symbol: str, market: str, price: float) -> None:
+def cache_price(symbol: str, market: str, price: float, environment: str = "mainnet") -> None:
     """Legacy API – record price with current timestamp."""
-    price_cache.record(symbol, market, price)
+    price_cache.record(symbol, market, price, environment=environment)
 
 
-def record_price_update(symbol: str, market: str, price: float, timestamp: Optional[float] = None) -> None:
+def record_price_update(symbol: str, market: str, price: float, timestamp: Optional[float] = None, environment: str = "mainnet") -> None:
     """Explicitly record price update with optional timestamp."""
-    price_cache.record(symbol, market, price, timestamp)
+    price_cache.record(symbol, market, price, timestamp, environment)
 
 
-def get_price_history(symbol: str, market: str = "CRYPTO") -> List[Tuple[float, float]]:
+def get_price_history(symbol: str, market: str = "CRYPTO", environment: str = "mainnet") -> List[Tuple[float, float]]:
     """Return recent price history (timestamp, price)."""
-    return price_cache.get_history(symbol, market)
+    return price_cache.get_history(symbol, market, environment)
 
 
 def clear_expired_prices() -> None:

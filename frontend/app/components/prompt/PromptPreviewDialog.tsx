@@ -24,6 +24,7 @@ interface PromptPreviewDialogProps {
   onOpenChange: (open: boolean) => void
   templateKey: string
   templateName: string
+  templateText: string  // Current template text from editor (for preview before save)
 }
 
 export default function PromptPreviewDialog({
@@ -31,6 +32,7 @@ export default function PromptPreviewDialog({
   onOpenChange,
   templateKey,
   templateName,
+  templateText,
 }: PromptPreviewDialogProps) {
   const [accounts, setAccounts] = useState<TradingAccount[]>([])
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
@@ -96,7 +98,8 @@ export default function PromptPreviewDialog({
     setGenerating(true)
     try {
       const result = await previewPrompt({
-        promptTemplateKey: templateKey,
+        templateText: templateText,  // Use current editor content (preview before save)
+        promptTemplateKey: templateKey,  // Fallback (for backward compatibility)
         accountIds: selectedAccountIds,
       })
       setPreviews(result.previews)

@@ -58,9 +58,10 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
 
-  // 获取 watchlist
+  // 获取 watchlist 和初始任务检查
   useEffect(() => {
     fetchWatchlist()
+    checkCurrentTask() // 初始检查一次是否有任务
   }, [])
 
   // 获取市场数据
@@ -78,11 +79,10 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
     }
   }, [watchlistSymbols, isPageVisible])
 
-  // 轮询当前任务状态
+  // 轮询当前任务状态 - 只在有活动任务时轮询
   useEffect(() => {
-    if (isPageVisible) {
-      checkCurrentTask()
-      taskCheckIntervalRef.current = setInterval(checkCurrentTask, 10000) // 改为10秒检查一次
+    if (isPageVisible && currentTask) {
+      taskCheckIntervalRef.current = setInterval(checkCurrentTask, 5000) // 有任务时5秒检查一次
     }
 
     return () => {
@@ -91,7 +91,7 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
         taskCheckIntervalRef.current = null
       }
     }
-  }, [isPageVisible])
+  }, [isPageVisible, currentTask])
 
   // 组件卸载时清理所有定时器
   useEffect(() => {
@@ -306,6 +306,14 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
                     <SelectItem value="1M">1M</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* K-line environment warning - always visible */}
+              <div className="pt-2 border-t">
+                <p className="text-xs text-amber-600 font-medium flex items-center gap-1">
+                  <span>⚠️</span>
+                  <span>K-line analysis is only available for Mainnet environment</span>
+                </p>
               </div>
 
               {selectedSymbol && renderBackfillButton()}

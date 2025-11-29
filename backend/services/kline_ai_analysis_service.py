@@ -38,15 +38,18 @@ def _format_klines_summary(klines: List[Dict]) -> str:
     lines.append("")
 
     for i, kline in enumerate(recent_klines):
-        timestamp = kline.get('time', 'N/A')
+        timestamp = kline.get('timestamp') or kline.get('time', 'N/A')
         if isinstance(timestamp, (int, float)):
             try:
                 dt = datetime.utcfromtimestamp(timestamp)
                 time_str = dt.strftime('%Y-%m-%d %H:%M')
             except:
                 time_str = str(timestamp)
+        elif kline.get('datetime'):
+            # If datetime string is available, use it
+            time_str = str(kline.get('datetime'))[:16]
         else:
-            time_str = str(timestamp)
+            time_str = 'N/A'
 
         open_price = kline.get('open', 0)
         high = kline.get('high', 0)
@@ -328,7 +331,7 @@ def analyze_kline_chart(
         max_retries = 3
         response = None
         success = False
-        request_timeout = 120 if is_reasoning_model else 60
+        request_timeout = 600  # 10 minutes for all models (reasoning models can be very slow)
 
         for endpoint in endpoints:
             for attempt in range(max_retries):
