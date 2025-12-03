@@ -1167,6 +1167,12 @@ def call_ai_for_decision(
     if "gpt-5" in model_lower:
         payload["reasoning_effort"] = "low"
 
+    # Enable streaming for deepseek-reasoner to handle high-load scenarios
+    # DeepSeek official recommendation: use streaming to avoid 30s timeout during high load
+    use_streaming = (account.model == "deepseek-reasoner")
+    if use_streaming:
+        payload["stream"] = True
+
     try:
         endpoints = build_chat_completion_endpoints(account.base_url, account.model)
         if not endpoints:
@@ -1178,20 +1184,14 @@ def call_ai_for_decision(
             )
             return None
 
-        # Retry logic for rate limiting and high-load scenarios
-        # DeepSeek API: During high load, server keeps connection alive and returns empty lines
-        # Intermediate components (CloudFront/ELB) may timeout at ~30s, causing ChunkedEncodingError
-        # Solution: Increase retries and timeout to handle DeepSeek's high-load behavior
-        max_retries = 5  # Increased from 3 to 5 for better resilience
+        # Retry logic for rate limiting and transient errors
+        max_retries = 3
         response = None
         success = False
 
         # Reasoning models need longer timeout (they think more, respond slower)
-        # DeepSeek models need extra timeout to handle high-load scenarios (empty line responses)
-        # For unknown models (not in our hardcoded list), use conservative longer timeout
-        # Better to wait longer than to fail due to timeout
         if is_reasoning_model:
-            request_timeout = 300  # Increased from 240s to 300s for DeepSeek high-load handling
+            request_timeout = 240
         else:
             # Unknown models: use 120s as conservative default
             # This handles custom model names, future models, and proxy services
@@ -1206,6 +1206,7 @@ def call_ai_for_decision(
                         json=payload,
                         timeout=request_timeout,
                         verify=False,  # Disable SSL verification for custom AI endpoints
+                        stream=use_streaming,  # Enable streaming reception for deepseek-reasoner
                     )
 
                     if response.status_code == 200:
@@ -1243,11 +1244,7 @@ def call_ai_for_decision(
                     break  # Try next endpoint if available
                 except requests.RequestException as req_err:
                     if attempt < max_retries - 1:
-                        # Enhanced backoff for DeepSeek high-load scenarios
-                        # Give server more time to recover between retries
-                        # Formula: 5 + 2^attempt + random jitter
-                        # Results: 6-7s, 7-8s, 9-10s, 13-14s, 21-22s
-                        wait_time = 5 + (2**attempt) + random.uniform(0, 1)
+                        wait_time = (2**attempt) + random.uniform(0, 1)
                         logger.warning(
                             "AI API request failed for endpoint %s (attempt %s/%s), retrying in %.1fs: %s",
                             endpoint,
@@ -1283,7 +1280,62 @@ def call_ai_for_decision(
             )
             return None
 
-        result = response.json()
+        # Handle streaming response for deepseek-reasoner
+        if use_streaming:
+            try:
+                full_content = ""
+                reasoning_content = ""
+                chunk_count = 0
+
+                # Parse SSE stream
+                for line in response.iter_lines():
+                    if line:
+                        line_str = line.decode('utf-8')
+
+                        # SSE format: "data: {...}"
+                        if line_str.startswith('data: '):
+                            json_str = line_str[6:]  # Remove "data: " prefix
+
+                            # Check for [DONE] marker
+                            if json_str.strip() == '[DONE]':
+                                break
+
+                            try:
+                                data = json.loads(json_str)
+                                chunk_count += 1
+
+                                # Extract content from delta
+                                if data.get('choices'):
+                                    delta = data['choices'][0].get('delta', {})
+                                    content = delta.get('content', '')
+                                    reasoning = delta.get('reasoning_content', '')
+
+                                    full_content += content
+                                    reasoning_content += reasoning
+
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"JSON decode error in streaming response: {e}")
+                                continue
+
+                # Construct complete response object (simulate non-streaming format)
+                result = {
+                    "choices": [{
+                        "message": {
+                            "content": full_content,
+                            "reasoning_content": reasoning_content
+                        },
+                        "finish_reason": "stop"
+                    }]
+                }
+
+                logger.info(f"Streaming response completed: {chunk_count} chunks, content: {len(full_content)} chars, reasoning: {len(reasoning_content)} chars")
+
+            except Exception as stream_err:
+                logger.error(f"Failed to parse streaming response: {stream_err}")
+                return None
+        else:
+            # Non-streaming response (existing logic)
+            result = response.json()
 
         # Extract text from OpenAI-compatible response format
         if "choices" in result and len(result["choices"]) > 0:
