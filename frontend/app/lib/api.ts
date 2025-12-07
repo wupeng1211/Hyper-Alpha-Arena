@@ -157,6 +157,8 @@ export interface TradingAccount {
   account_type: string  // "AI" or "MANUAL"
   is_active: boolean
   auto_trading_enabled?: boolean
+  wallet_address?: string | null  // Hyperliquid mainnet wallet address
+  has_mainnet_wallet?: boolean  // Whether account has mainnet wallet configured
 }
 
 export interface TradingAccountCreate {
@@ -326,6 +328,15 @@ export async function deletePromptBinding(bindingId: number): Promise<void> {
   await apiRequest(`/prompts/bindings/${bindingId}`, {
     method: 'DELETE',
   })
+}
+
+export interface VariablesReferenceResponse {
+  content: string
+}
+
+export async function getVariablesReference(): Promise<VariablesReferenceResponse> {
+  const response = await apiRequest('/prompts/variables-reference')
+  return response.json()
 }
 
 export interface PromptPreviewRequest {
@@ -537,14 +548,28 @@ export interface ArenaModelChatResponse {
   entries: ArenaModelChatEntry[]
 }
 
-export async function getArenaModelChat(params?: { limit?: number; account_id?: number; trading_mode?: string; wallet_address?: string }): Promise<ArenaModelChatResponse> {
+export async function getArenaModelChat(params?: { limit?: number; account_id?: number; trading_mode?: string; wallet_address?: string; before_time?: string }): Promise<ArenaModelChatResponse> {
   const search = new URLSearchParams()
   if (params?.limit) search.append('limit', params.limit.toString())
   if (params?.account_id) search.append('account_id', params.account_id.toString())
   if (params?.trading_mode) search.append('trading_mode', params.trading_mode)
   if (params?.wallet_address) search.append('wallet_address', params.wallet_address)
+  if (params?.before_time) search.append('before_time', params.before_time)
   const query = search.toString()
   const response = await apiRequest(`/arena/model-chat${query ? `?${query}` : ''}`)
+  return response.json()
+}
+
+export interface ModelChatSnapshots {
+  id: number
+  prompt_snapshot?: string | null
+  reasoning_snapshot?: string | null
+  decision_snapshot?: string | null
+  error?: string
+}
+
+export async function getModelChatSnapshots(decisionId: number): Promise<ModelChatSnapshots> {
+  const response = await apiRequest(`/arena/model-chat/${decisionId}/snapshots`)
   return response.json()
 }
 
@@ -807,7 +832,7 @@ export interface MembershipResponse {
 
 // Get membership information from external membership service
 // IMPORTANT: This function supports both same-domain and cross-domain access
-// - Same-domain (arena.akooi.com): Uses cookies automatically
+// - Same-domain: Uses cookies automatically
 // - Cross-domain (localhost/custom domains): Uses Authorization header with arena_token
 // This ensures paid users can access membership features regardless of deployment domain
 export async function getMembershipInfo(): Promise<MembershipResponse> {
@@ -834,6 +859,11 @@ export async function getMembershipInfo(): Promise<MembershipResponse> {
     if (!response.ok) {
       if (response.status === 401) {
         // User not authenticated or no membership
+        // This can happen if:
+        // 1. User is not logged in to www.akooi.com
+        // 2. Cross-site cookies are blocked (localhost access with old cookies)
+        // 3. Token has expired
+        console.warn('[Membership] 401 Unauthorized - Please re-login at https://www.akooi.com to refresh your session')
         return { membership: null }
       }
       throw new Error(`Failed to fetch membership info: ${response.status}`)
@@ -846,4 +876,63 @@ export async function getMembershipInfo(): Promise<MembershipResponse> {
     // Return null membership on error to gracefully degrade
     return { membership: null }
   }
+}
+
+// Hyperliquid Builder Fee Authorization APIs
+export interface BuilderAuthorizationStatus {
+  authorized: boolean
+  max_fee: number
+  required_fee: number
+  builder_address: string
+}
+
+export interface UnauthorizedAccount {
+  account_id: number
+  account_name: string
+  wallet_address: string
+  max_fee: number
+  required_fee: number
+}
+
+export interface CheckMainnetAccountsResponse {
+  unauthorized_accounts: UnauthorizedAccount[]
+}
+
+export interface ApproveBuilderResponse {
+  success: boolean
+  message: string
+  builder_address: string
+  approved_fee: string
+  result?: unknown
+}
+
+export interface DisableTradingResponse {
+  success: boolean
+  message: string
+  account_id: number
+  account_name: string
+}
+
+export async function checkBuilderAuthorization(walletAddress: string): Promise<BuilderAuthorizationStatus> {
+  const response = await apiRequest(`/account/hyperliquid/check-builder-authorization?wallet_address=${walletAddress}`)
+  return response.json()
+}
+
+export async function checkMainnetAccounts(): Promise<CheckMainnetAccountsResponse> {
+  const response = await apiRequest('/account/hyperliquid/check-mainnet-accounts')
+  return response.json()
+}
+
+export async function approveBuilder(accountId: number): Promise<ApproveBuilderResponse> {
+  const response = await apiRequest(`/account/hyperliquid/approve-builder?account_id=${accountId}`, {
+    method: 'POST'
+  })
+  return response.json()
+}
+
+export async function disableTrading(accountId: number): Promise<DisableTradingResponse> {
+  const response = await apiRequest(`/account/${accountId}/disable-trading`, {
+    method: 'POST'
+  })
+  return response.json()
 }

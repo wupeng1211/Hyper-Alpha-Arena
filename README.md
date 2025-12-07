@@ -42,11 +42,22 @@ Hyper Alpha Arena is a production-ready AI trading platform where Large Language
 - **Multi-Model LLM Support**: OpenAI API compatible models (GPT-5, Claude, Deepseek, etc.)
 - **Multi-Wallet Architecture**: Each AI Trader can configure separate wallets for Testnet and Mainnet
 - **Global Trading Mode**: Centralized environment switch affecting all AI Traders simultaneously
+- **AI Prompt Generator**: Interactive chat interface for generating optimized trading strategy prompts
+  - Natural language conversation to define trading goals and risk preferences
+  - Automatic generation of structured prompts with technical indicators
+  - Conversation history management with title editing
+  - One-click application to AI Trader configurations
 - **Prompt Template Management**:
   - Customizable AI trading prompts with visual editor
   - Account-specific prompt binding system with Hyperliquid-specific templates
   - Default, Pro, and Hyperliquid templates with leverage education
   - Automatic fallback to default template for unbound accounts
+- **Technical Analysis Integration**: 11 built-in technical indicators
+  - Trend: SMA, EMA, MACD
+  - Momentum: RSI, Stochastic Oscillator
+  - Volatility: Bollinger Bands, ATR
+  - Volume: OBV, VWAP
+  - Support/Resistance: Pivot Points, Fibonacci Retracement
 - **Real-time Market Data**: Live cryptocurrency price feeds from multiple exchanges via ccxt
 - **AI Trader Management**: Create and manage multiple AI trading agents with independent configurations
 
@@ -70,19 +81,17 @@ Hyper Alpha Arena is a production-ready AI trading platform where Large Language
 
 ## Screenshots
 
-### Main Dashboard (Hyperliquid Mainnet)
-<img width="3206" height="1928" alt="image" src="https://github.com/user-attachments/assets/afe0600b-c34c-401e-a47a-db81525a9ccf" />
+### Dashboard Overview
+![Dashboard Overview](screenshots/dashboard-overview.png)
 
-<img width="3206" height="1932" alt="image" src="https://github.com/user-attachments/assets/48e70a94-013e-4873-9b44-f371e3a76581" />
+### AI Prompt Generator
+![AI Prompt Generator](screenshots/ai-prompt-generator.png)
 
-### Model Chat Prompt
-<img width="3206" height="1930" alt="image" src="https://github.com/user-attachments/assets/e200e702-c240-4ccd-896b-68038ffe475d" />
+### Technical Analysis
+![Technical Analysis](screenshots/ai-technical-analysis.png)
 
-### AI Trader and Strategy Settings
-<img width="3210" height="1932" alt="image" src="https://github.com/user-attachments/assets/383e447f-b5a1-4226-a24d-ee9e5a686d6f" />
-
-### System Log
-<img width="3208" height="1932" alt="image" src="https://github.com/user-attachments/assets/821ea000-ee78-4573-8c05-52579e8369b1" />
+### Trader Configuration
+![Trader Configuration](screenshots/trader-configuration.png)
 
 ## Quick Start
 
@@ -132,84 +141,85 @@ docker compose up -d --build # (or docker-compose up -d --build)
 
 ## First-Time Setup
 
-### For Paper Trading (Risk-Free Testing)
+### Understanding Hyperliquid Authentication
 
-1. Open http://localhost:8802
-2. Navigate to **AI Traders** section
-3. Create your first AI trader:
-   - Name: e.g., "GPT-5 Trader"
-   - Model: Select from dropdown (gpt-5-mini, claude-sonnet-4.5, etc.)
-   - API Key: Your OpenAI/Anthropic/Deepseek API key
-   - Base URL: Leave default or use custom endpoint
-4. Configure trading strategy:
-   - Trigger Mode: Real-time (recommended for active trading)
-   - Enable Strategy: Toggle to activate
-5. Monitor logs in **System Logs** section to verify setup
+> **⚠️ IMPORTANT**: Hyperliquid is a decentralized exchange (DEX) where all trading operations are executed as on-chain transactions. Unlike centralized exchanges that use API keys, DEX platforms require **private keys** to cryptographically sign each transaction on the blockchain. This is not a limitation but a fundamental requirement of decentralized architecture - your trades are executed directly on-chain without intermediaries.
 
-### For Hyperliquid Real Trading (⚠️ Use with Caution)
+**Official Documentation:**
+- Hyperliquid API Signing: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/signing
+- Python SDK: https://github.com/hyperliquid-dex/hyperliquid-python-sdk
 
-**Prerequisites:**
-- A Hyperliquid account with API access
-- Your private key (starts with 0x...)
-- Test funds in testnet OR real funds in mainnet
+**Our Security Measures:**
+- Private keys are encrypted using AES-256 before storage
+- All encryption/decryption happens locally on your server
+- Keys are never transmitted in plain text
+- We recommend using a dedicated trading wallet separate from your main holdings
 
-**Step 1: Get Your Hyperliquid Private Key**
+### Setup Steps
 
-1. **Testnet (Recommended for Testing)**:
-   - Visit: https://app.hyperliquid-testnet.xyz/
-   - Create an account and export your private key
-   - Request testnet funds from the faucet
+**1. Create Your First AI Trader**
 
-2. **Mainnet (Real Money)**:
-   - Visit: https://app.hyperliquid.xyz/
-   - Create an account or use existing wallet
-   - Export your private key from your wallet
-   - ⚠️ **WARNING**: This is your real money wallet - keep private key secure!
+Open http://localhost:8802 and navigate to **AI Traders** section:
+- Name: e.g., "GPT-5 Trader"
+- Model: Select from dropdown (gpt-5-mini, claude-sonnet-4.5, deepseek-chat, etc.)
+- API Key: Your LLM provider API key (OpenAI/Anthropic/Deepseek)
+- Base URL: Leave default or use custom endpoint
 
-**Step 2: Configure Wallets for AI Trader**
+**2. Get Your Private Key**
 
-1. Open http://localhost:8802
-2. Navigate to **AI Traders** section in the sidebar
-3. Create or select an existing AI Trader
-4. Scroll down to **Hyperliquid Wallets** section
-5. You'll see two wallet configuration panels:
-   - **Testnet Wallet**: For paper trading (risk-free)
-   - **Mainnet Wallet**: For real trading (real funds)
-6. For each wallet you want to configure:
-   - Enter your Hyperliquid private key (will be encrypted and stored securely)
-   - Set maximum leverage (1-50x, recommended: 3x for testing, 5x for mainnet)
-   - Set default leverage (1-3x recommended)
-   - Click **Save Wallet**
-7. Your wallet address will be automatically parsed from the private key
-8. Balance information will load automatically after configuration
+Hyperliquid supports two wallet types. Choose the method that matches your setup:
 
-**Step 3: Set Global Trading Mode**
+**Option A: Using EVM Wallet (MetaMask, Rabby, etc.)**
+- If you connected to Hyperliquid using MetaMask, Rabby, WalletConnect, or other Web3 wallets
+- Export your private key from your wallet software:
+  - **MetaMask**: Account Details → Export Private Key
+  - **Rabby**: Settings → Export Private Key
+  - Other wallets: Check their documentation for private key export
+- This is the most common method for users who already have Web3 wallets
+- Official guide: https://hyperliquid.gitbook.io/hyperliquid-docs/onboarding/how-to-start-trading
 
-1. Navigate to **Settings** (gear icon in sidebar) or **Hyperliquid** page
-2. Find the **Global Trading Environment** section
-3. Choose your mode:
-   - **TESTNET**: All AI Traders will use their testnet wallets (recommended for initial testing)
-   - **MAINNET**: All AI Traders will use their mainnet wallets (⚠️ REAL MONEY)
-4. Confirm the switch (especially important when switching to mainnet)
+**Option B: Using Hyperliquid Email Wallet**
+- If you logged into Hyperliquid using email (not wallet connection)
+- Visit https://app.hyperliquid-testnet.xyz/ (testnet) or https://app.hyperliquid.xyz/ (mainnet)
+- Click "Export Email Wallet" in the settings dropdown
+- Follow the steps to copy your private key
+- Official guide: https://hyperliquid.gitbook.io/hyperliquid-docs/onboarding/export-your-email-wallet
 
-**Step 4: Enable Auto Trading**
+**3. Configure Hyperliquid Wallet**
 
-1. In your AI Trader configuration
-2. Toggle **Auto Trading** to ON
-3. Configure trading strategy:
-   - Trigger Mode: Real-time (recommended for active trading)
-   - Trigger Interval: 60-150 seconds
-   - Price Threshold: 0.5-2.0%
-4. Choose appropriate **Prompt Template**: "Hyperliquid Pro" includes leverage education
-5. Monitor initial trades carefully in **System Logs**
+In the **Hyperliquid Wallets** section, you'll see two wallet panels:
+- **Testnet Wallet**: For risk-free testing with free test funds
+- **Mainnet Wallet**: For real trading with actual capital
 
-**Safety Tips:**
-- ✅ Always test on testnet first with at least 1 week of observation
-- ✅ Start with low leverage (1x-3x) until you understand the system
-- ✅ Monitor margin usage regularly - liquidations can happen fast
-- ✅ Use stop-loss in your AI prompts to limit downside risk
-- ❌ Never use maximum leverage (50x) - extremely high liquidation risk
-- ❌ Don't leave trading unmonitored for extended periods
+For each wallet:
+- Enter your private key (obtained from step 2 above)
+- Set maximum leverage (1-50x)
+- Set default leverage (1-3x recommended)
+- Click **Save Wallet**
+
+**4. Set Global Trading Environment**
+
+Navigate to **Settings** or **Hyperliquid** page:
+- **TESTNET**: All AI Traders use testnet wallets (recommended for initial testing)
+- **MAINNET**: All AI Traders use mainnet wallets (real money)
+
+**5. Enable Auto Trading**
+
+In your AI Trader configuration:
+- Toggle **Auto Trading** to ON
+- Set Trigger Mode: Real-time (recommended)
+- Set Trigger Interval: 60-150 seconds
+- Choose Prompt Template: "Hyperliquid Pro" includes leverage education
+- Monitor initial trades in **System Logs**
+
+### Safety Recommendations
+
+These are suggestions based on best practices. Many users have different risk preferences:
+- Consider testing on testnet first to understand system behavior
+- Starting with lower leverage (1x-3x) can help you learn the system
+- Monitoring margin usage helps avoid unexpected liquidations
+- Using dedicated trading wallets (separate from main holdings) is a common security practice
+- Some users prefer gradual scaling rather than maximum leverage from the start
 
 ## Supported Models
 

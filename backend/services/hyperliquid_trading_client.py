@@ -47,6 +47,42 @@ getcontext().prec = 28
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# TPSL ORDER CACHE - In-memory cache to prevent duplicate TP/SL orders
+# ============================================================================
+# This cache tracks TP/SL orders that have been placed to avoid creating
+# duplicates when the Hyperliquid API has latency in returning newly created orders.
+# Structure: {(wallet_address, symbol): {"tp_price": float, "sl_price": float, "timestamp": int}}
+# The cache is automatically cleared on server restart (desired behavior).
+from typing import Tuple
+_tpsl_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+def _get_cache_key(wallet_address: str, symbol: str) -> Tuple[str, str]:
+    """Generate cache key for TPSL orders"""
+    return (wallet_address.lower() if wallet_address else "", symbol.upper())
+
+def _get_cached_tpsl(wallet_address: str, symbol: str) -> Optional[Dict[str, Any]]:
+    """Get cached TPSL prices for a symbol"""
+    key = _get_cache_key(wallet_address, symbol)
+    return _tpsl_cache.get(key)
+
+def _set_cached_tpsl(wallet_address: str, symbol: str, tp_price: Optional[float], sl_price: Optional[float]) -> None:
+    """Update cached TPSL prices for a symbol"""
+    key = _get_cache_key(wallet_address, symbol)
+    _tpsl_cache[key] = {
+        "tp_price": tp_price,
+        "sl_price": sl_price,
+        "timestamp": int(time.time() * 1000)
+    }
+    logger.info(f"[TPSL CACHE] Updated cache for {symbol}: TP={tp_price}, SL={sl_price}")
+
+def _clear_cached_tpsl(wallet_address: str, symbol: str) -> None:
+    """Clear cached TPSL prices for a symbol"""
+    key = _get_cache_key(wallet_address, symbol)
+    if key in _tpsl_cache:
+        del _tpsl_cache[key]
+        logger.info(f"[TPSL CACHE] Cleared cache for {symbol}")
+
 
 class EnvironmentMismatchError(Exception):
     """Raised when account environment doesn't match client environment"""
@@ -133,6 +169,13 @@ class HyperliquidTradingClient:
             })
             self._disable_hip3_markets()
 
+            # Load markets to initialize token mappings (required for CCXT 4.5+)
+            try:
+                self.exchange.load_markets()
+                logger.info(f"CCXT markets loaded successfully for {environment}")
+            except Exception as market_err:
+                logger.warning(f"Failed to load CCXT markets (non-critical): {market_err}")
+
             logger.info(
                 f"CCXT HyperliquidClient initialized: account_id={account_id} "
                 f"environment={environment.upper()} wallet={self.wallet_address}"
@@ -178,6 +221,8 @@ class HyperliquidTradingClient:
             hip3_options = fetch_markets_options.setdefault('hip3', {})
             hip3_options['enabled'] = False
             hip3_options['dex'] = []
+            # Manually initialize hip3TokensByName to prevent KeyError in coin_to_market_id()
+            self.exchange.options.setdefault('hip3TokensByName', {})
         except Exception as options_error:
             logger.debug(f"Unable to update HIP3 fetch options: {options_error}")
 
@@ -195,6 +240,28 @@ class HyperliquidTradingClient:
             return json.dumps(payload, default=str)
         except Exception:
             return str(payload)
+
+    def _get_builder_params(self) -> Optional[Dict[str, Any]]:
+        """
+        Get builder fee parameters for orders.
+
+        Only returns builder params for mainnet environment to avoid
+        unnecessary fees on testnet trading.
+
+        Returns:
+            Dict with builder address and fee rate for mainnet, None for testnet
+            Format: {"b": "0x...", "f": 30} or None
+        """
+        # Only apply builder fee on mainnet, not on testnet
+        if self.environment != "mainnet":
+            return None
+
+        from config.settings import HYPERLIQUID_BUILDER_CONFIG
+
+        return {
+            "b": HYPERLIQUID_BUILDER_CONFIG.builder_address,
+            "f": HYPERLIQUID_BUILDER_CONFIG.builder_fee
+        }
 
     def _record_exchange_action(
         self,
@@ -764,6 +831,143 @@ class HyperliquidTradingClient:
             logger.error(f"Failed to get recent closed trades: {e}", exc_info=True)
             return []
 
+    def get_open_orders(self, db: Session, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get current open orders (unfilled/partially filled orders)
+
+        This method uses Hyperliquid SDK's Info.frontend_open_orders() to retrieve
+        all open orders with complete frontend information including trigger conditions,
+        TP/SL flags, and order types.
+
+        Args:
+            db: Database session (for environment validation)
+            symbol: Optional symbol filter (e.g., "BTC"). If None, returns all symbols.
+
+        Returns:
+            List of open order dicts with fields:
+                - order_id: Order ID
+                - symbol: Symbol name
+                - side: "Buy" or "Sell"
+                - direction: "Close Short", "Close Long", "Open Long", "Open Short"
+                - order_type: Order type (e.g., "Stop Limit", "Take Profit Limit", "Limit")
+                - size: Current remaining size
+                - original_size: Original order size
+                - price: Limit price
+                - order_value: Calculated order value (size * price)
+                - reduce_only: Whether this is a reduce-only order
+                - is_trigger: Whether this is a trigger order
+                - trigger_condition: Trigger condition string (e.g., "Price above 87500")
+                - trigger_price: Trigger price
+                - is_position_tpsl: Whether this is a position-level TP/SL
+                - tif: Time in force (may be null for trigger orders)
+                - order_time: Order placement time (UTC string)
+                - timestamp: Order placement timestamp (milliseconds)
+
+        Raises:
+            EnvironmentMismatchError: If environment validation fails
+        """
+        self._validate_environment(db)
+
+        try:
+            logger.info(f"Fetching open orders for wallet {self.wallet_address} on {self.environment}")
+
+            # Use SDK Info to get frontend open orders (includes trigger conditions, TP/SL info)
+            raw_orders = self.sdk_info.frontend_open_orders(self.wallet_address)
+
+            # Transform to simplified format for AI prompt
+            orders = []
+            for order in raw_orders:
+                from datetime import datetime, timezone
+
+                # Parse order timestamp
+                timestamp_ms = order.get('timestamp', 0)
+                utc_dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+                order_time = utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+                # Determine direction based on side and reduce_only
+                side_raw = order.get('side', '')
+                reduce_only = order.get('reduceOnly', False)
+
+                if side_raw == 'B':  # Buy
+                    side = 'Buy'
+                    direction = 'Close Short' if reduce_only else 'Open Long'
+                else:  # 'A' = Ask/Sell
+                    side = 'Sell'
+                    direction = 'Close Long' if reduce_only else 'Open Short'
+
+                # Calculate order value
+                size = float(order.get('sz', 0))
+                price = float(order.get('limitPx', 0))
+                order_value = size * price
+
+                # Extract trigger information
+                trigger_condition = order.get('triggerCondition', '')
+                trigger_price = order.get('triggerPx')
+
+                order_summary = {
+                    'order_id': order.get('oid'),
+                    'symbol': order.get('coin', ''),
+                    'side': side,
+                    'direction': direction,
+                    'order_type': order.get('orderType', 'Limit'),
+                    'size': size,
+                    'original_size': float(order.get('origSz', 0)),
+                    'price': price,
+                    'order_value': order_value,
+                    'reduce_only': reduce_only,
+                    'is_trigger': order.get('isTrigger', False),
+                    'trigger_condition': trigger_condition if trigger_condition else None,
+                    'trigger_price': float(trigger_price) if trigger_price else None,
+                    'is_position_tpsl': order.get('isPositionTpsl', False),
+                    'tif': order.get('tif'),
+                    'order_time': order_time,
+                    'timestamp': timestamp_ms,
+                }
+
+                orders.append(order_summary)
+
+            # Sort by timestamp (newest first)
+            orders.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+
+            # Filter by symbol if specified
+            if symbol:
+                orders = [o for o in orders if o.get('symbol') == symbol]
+                logger.debug(f"Filtered to {len(orders)} orders for symbol {symbol}")
+
+            logger.info(f"Found {len(orders)} open orders")
+
+            self._record_exchange_action(
+                action_type="fetch_open_orders",
+                status="success",
+                symbol=symbol,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "environment": self.environment,
+                    "symbol_filter": symbol,
+                },
+                response_payload=None,
+            )
+
+            return orders
+
+        except Exception as e:
+            self._record_exchange_action(
+                action_type="fetch_open_orders",
+                status="error",
+                symbol=symbol,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "environment": self.environment,
+                    "symbol_filter": symbol,
+                },
+                response_payload=None,
+                error_message=str(e),
+            )
+            logger.error(f"Failed to get open orders: {e}", exc_info=True)
+            return []
+
     def place_order(
         self,
         db: Session,
@@ -1051,13 +1255,13 @@ class HyperliquidTradingClient:
             logger.error(f"Failed to set leverage: {e}")
             raise
 
-    def cancel_order(self, db: Session, order_id: int, symbol: str) -> bool:
+    def cancel_order(self, db: Session, order_id: Any, symbol: str) -> bool:
         """
-        Cancel an open order
+        Cancel an open order using Hyperliquid SDK
 
         Args:
             db: Database session
-            order_id: Hyperliquid order ID (oid)
+            order_id: Hyperliquid order ID (oid) - can be int or string
             symbol: Asset symbol
 
         Returns:
@@ -1069,17 +1273,687 @@ class HyperliquidTradingClient:
         self._validate_environment(db)
 
         try:
-            logger.info(f"Cancelling order {order_id} for {symbol} on {self.environment}")
+            # Ensure order_id is an integer (SDK requires int)
+            if isinstance(order_id, str):
+                order_id = int(order_id)
+            
+            logger.info(f"[CANCEL] Cancelling order {order_id} (type={type(order_id).__name__}) for {symbol} on {self.environment}")
 
-            # TODO: Implement actual order cancellation
-            # For reference, Hyperliquid exchange endpoint:
-            # POST /exchange with action type "cancel"
+            # Use SDK to cancel order
+            result = self.sdk_exchange.cancel(symbol, order_id)
+            
+            logger.info(f"[CANCEL] SDK cancel result: {result}")
+            
+            # Check for success - SDK returns {"status": "ok", "response": {"type": "cancel", "data": {"statuses": ["success"]}}}
+            if result.get("status") == "ok":
+                response_data = result.get("response", {})
+                if isinstance(response_data, dict):
+                    statuses = response_data.get("data", {}).get("statuses", [])
+                    if statuses and statuses[0] == "success":
+                        logger.info(f"[CANCEL] Successfully cancelled order {order_id} for {symbol}")
+                        self._record_exchange_action(
+                            action_type="cancel_order",
+                            status="success",
+                            symbol=symbol,
+                            request_payload={"order_id": order_id, "symbol": symbol},
+                            response_payload=result,
+                        )
+                        return True
+                    elif statuses and "error" in str(statuses[0]).lower():
+                        error_msg = statuses[0]
+                        logger.error(f"[CANCEL] Failed to cancel order {order_id}: {error_msg}")
+                        self._record_exchange_action(
+                            action_type="cancel_order",
+                            status="error",
+                            symbol=symbol,
+                            request_payload={"order_id": order_id, "symbol": symbol},
+                            response_payload=result,
+                            error_message=str(error_msg),
+                        )
+                        return False
+                
+                # If we got here with status "ok", assume success
+                logger.info(f"[CANCEL] Order {order_id} cancelled (status=ok)")
+                self._record_exchange_action(
+                    action_type="cancel_order",
+                    status="success",
+                    symbol=symbol,
+                    request_payload={"order_id": order_id, "symbol": symbol},
+                    response_payload=result,
+                )
+                return True
+            else:
+                error_msg = result.get("response", "Unknown error")
+                self._record_exchange_action(
+                    action_type="cancel_order",
+                    status="error",
+                    symbol=symbol,
+                    request_payload={"order_id": order_id, "symbol": symbol},
+                    response_payload=result,
+                    error_message=str(error_msg),
+                )
+                logger.error(f"[CANCEL] Failed to cancel order {order_id}: {error_msg}")
+                return False
 
-            return True
+        except ValueError as ve:
+            logger.error(f"[CANCEL] Invalid order_id format: {order_id} - {ve}")
+            self._record_exchange_action(
+                action_type="cancel_order",
+                status="error",
+                symbol=symbol,
+                request_payload={"order_id": order_id, "symbol": symbol},
+                error_message=f"Invalid order_id format: {ve}",
+            )
+            return False
+        except Exception as e:
+            self._record_exchange_action(
+                action_type="cancel_order",
+                status="error",
+                symbol=symbol,
+                request_payload={"order_id": order_id, "symbol": symbol},
+                error_message=str(e),
+            )
+            logger.error(f"[CANCEL] Failed to cancel order: {e}", exc_info=True)
+            raise
+
+    def _get_open_orders_raw(self, db: Session, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all open orders (including TP/SL trigger orders) from Hyperliquid - returns raw SDK data
+
+        INTERNAL USE ONLY: This method returns raw SDK data format for TP/SL management.
+        For formatted order data, use get_open_orders() instead.
+
+        Args:
+            db: Database session
+            symbol: Optional symbol filter (e.g., "BTC"). If None, returns all symbols.
+
+        Returns:
+            List of open order dicts with raw SDK fields:
+                - oid: Order ID
+                - coin: Symbol name
+                - side: "B" (buy) or "A" (sell/ask)
+                - sz: Order size
+                - limitPx: Limit price
+                - orderType: Order type info
+                - triggerPx: Trigger price (for TP/SL orders)
+                - tpsl: "tp" or "sl" (for TP/SL orders)
+                - reduceOnly: Whether order is reduce-only
+
+        Raises:
+            EnvironmentMismatchError: If environment validation fails
+        """
+        self._validate_environment(db)
+
+        try:
+            logger.info(f"Fetching raw open orders for wallet {self.wallet_address} on {self.environment}")
+
+            # Use SDK Info to get open orders (frontend_open_orders includes trigger orders)
+            open_orders = self.sdk_info.frontend_open_orders(self.wallet_address)
+
+            logger.debug(f"Retrieved {len(open_orders)} open orders for wallet {self.wallet_address}")
+
+            # Filter by symbol if specified
+            if symbol:
+                open_orders = [o for o in open_orders if o.get('coin') == symbol]
+                logger.debug(f"Filtered to {len(open_orders)} orders for symbol {symbol}")
+
+            self._record_exchange_action(
+                action_type="fetch_open_orders_raw",
+                status="success",
+                symbol=symbol,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "symbol_filter": symbol,
+                },
+                response_payload=None,
+            )
+
+            return open_orders
 
         except Exception as e:
-            logger.error(f"Failed to cancel order: {e}")
+            self._record_exchange_action(
+                action_type="fetch_open_orders_raw",
+                status="error",
+                symbol=symbol,
+                request_payload={
+                    "account_id": self.account_id,
+                    "wallet_address": self.wallet_address,
+                    "symbol_filter": symbol,
+                },
+                error_message=str(e),
+            )
+            logger.error(f"Failed to get raw open orders: {e}", exc_info=True)
             raise
+
+    def get_tpsl_orders(self, db: Session, symbol: str) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Get current TP and SL orders for a specific symbol
+
+        Args:
+            db: Database session
+            symbol: Asset symbol (e.g., "BTC")
+
+        Returns:
+            Dict with:
+                - tp: TP order dict or None (most recent if multiple exist)
+                - sl: SL order dict or None (most recent if multiple exist)
+                - all_tp_orders: List of ALL TP orders found
+                - all_sl_orders: List of ALL SL orders found
+        """
+        open_orders = self._get_open_orders_raw(db, symbol)
+        
+        # Debug: log all open orders to understand structure
+        import sys
+        print(f"[TPSL DEBUG] {symbol} - Found {len(open_orders)} open orders", file=sys.stderr, flush=True)
+        logger.info(f"[TPSL DEBUG] {symbol} - Found {len(open_orders)} open orders")
+        for i, order in enumerate(open_orders):
+            print(f"[TPSL DEBUG] Order {i}: {order}", file=sys.stderr, flush=True)
+            logger.info(f"[TPSL DEBUG] Order {i}: {order}")
+        
+        # Collect ALL TP and SL orders (not just the first one)
+        all_tp_orders = []
+        all_sl_orders = []
+        
+        for order in open_orders:
+            order_type = order.get('orderType', {})
+            is_trigger = order.get('isTrigger', False)
+            trigger_px = order.get('triggerPx')
+            trigger_condition = order.get('triggerCondition', '')
+            
+            # Debug: log order type structure
+            logger.debug(f"[TPSL DEBUG] Order type: {order_type}, type={type(order_type)}, isTrigger={is_trigger}")
+            
+            # Determine if this is a TP or SL order
+            # Support BOTH formats:
+            # 1. Dict format: orderType = {"trigger": {"tpsl": "tp", "triggerPx": ...}}
+            # 2. String format: orderType = "Take Profit Limit" or "Stop Limit"
+            
+            tpsl_type = None
+            trigger_price = None
+            
+            # Format 1: Dict with trigger info
+            if isinstance(order_type, dict) and 'trigger' in order_type:
+                trigger_info = order_type.get('trigger', {})
+                tpsl_type = trigger_info.get('tpsl')
+                trigger_price = float(trigger_info.get('triggerPx', 0))
+                logger.info(f"[TPSL DEBUG] Found dict trigger order: tpsl={tpsl_type}, trigger_price={trigger_price}")
+            
+            # Format 2: String orderType (from frontend_open_orders)
+            elif isinstance(order_type, str) and is_trigger:
+                # Parse orderType string: "Take Profit Limit" or "Stop Limit"
+                order_type_lower = order_type.lower()
+                if 'take profit' in order_type_lower:
+                    tpsl_type = 'tp'
+                elif 'stop' in order_type_lower and 'limit' in order_type_lower:
+                    tpsl_type = 'sl'
+                
+                # Get trigger price from triggerPx field
+                if trigger_px:
+                    try:
+                        trigger_price = float(trigger_px)
+                    except (ValueError, TypeError):
+                        trigger_price = 0
+                
+                logger.info(f"[TPSL DEBUG] Found string trigger order: orderType='{order_type}', tpsl={tpsl_type}, trigger_price={trigger_price}")
+            
+            # Format 3: Check triggerCondition as fallback
+            elif is_trigger and trigger_condition:
+                # Parse triggerCondition: "Price above 130" (TP) or "Price below 125.5" (SL)
+                if 'above' in trigger_condition.lower():
+                    tpsl_type = 'tp'
+                elif 'below' in trigger_condition.lower():
+                    tpsl_type = 'sl'
+                
+                if trigger_px:
+                    try:
+                        trigger_price = float(trigger_px)
+                    except (ValueError, TypeError):
+                        trigger_price = 0
+                
+                logger.info(f"[TPSL DEBUG] Found trigger by condition: condition='{trigger_condition}', tpsl={tpsl_type}, trigger_price={trigger_price}")
+            
+            # If we identified a TP or SL order, add it to the list
+            if tpsl_type and trigger_price:
+                order_dict = {
+                    'oid': order.get('oid'),
+                    'trigger_price': trigger_price,
+                    'limit_price': float(order.get('limitPx', 0)),
+                    'size': float(order.get('sz', 0)),
+                    'side': order.get('side'),
+                    'reduce_only': order.get('reduceOnly', True),
+                    'timestamp': order.get('timestamp', 0),
+                }
+                
+                if tpsl_type == 'tp':
+                    all_tp_orders.append(order_dict)
+                    logger.info(f"[TPSL DEBUG] Identified TP order: {order_dict}")
+                elif tpsl_type == 'sl':
+                    all_sl_orders.append(order_dict)
+                    logger.info(f"[TPSL DEBUG] Identified SL order: {order_dict}")
+        
+        # Return the most recent order of each type (for backward compatibility)
+        # but also include all orders for cleanup
+        tp_order = all_tp_orders[0] if all_tp_orders else None
+        sl_order = all_sl_orders[0] if all_sl_orders else None
+        
+        logger.info(f"[TPSL] {symbol} - Found {len(all_tp_orders)} TP orders, {len(all_sl_orders)} SL orders")
+        logger.info(f"[TPSL] {symbol} - Primary TP={tp_order}, Primary SL={sl_order}")
+        
+        return {
+            'tp': tp_order, 
+            'sl': sl_order,
+            'all_tp_orders': all_tp_orders,
+            'all_sl_orders': all_sl_orders,
+        }
+
+    def update_tpsl(
+        self,
+        db: Session,
+        symbol: str,
+        new_tp_price: Optional[float] = None,
+        new_sl_price: Optional[float] = None,
+        position_size: Optional[float] = None,
+        is_long: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update TP and/or SL orders for an existing position
+
+        This method:
+        1. Gets current TP/SL orders from Hyperliquid API FIRST
+        2. Compares existing prices with requested prices
+        3. If prices match (within 0.1%) → SKIP entirely (no duplicate orders)
+        4. If prices differ → Cancel old orders and place new ones
+        5. Updates in-memory cache after successful operations
+
+        Args:
+            db: Database session
+            symbol: Asset symbol (e.g., "BTC")
+            new_tp_price: New take profit price (None to keep current or skip)
+            new_sl_price: New stop loss price (None to keep current or skip)
+            position_size: Position size for new orders (required if placing new orders)
+            is_long: True if position is long, False if short (required for order direction)
+
+        Returns:
+            Dict with:
+                - success: Boolean indicating overall success
+                - tp_updated: Boolean indicating if TP was updated
+                - sl_updated: Boolean indicating if SL was updated
+                - old_tp: Previous TP price (if existed)
+                - old_sl: Previous SL price (if existed)
+                - new_tp: New TP price (if updated)
+                - new_sl: New SL price (if updated)
+                - errors: List of error messages (if any)
+        """
+        self._validate_environment(db)
+
+        result = {
+            'success': True,
+            'tp_updated': False,
+            'sl_updated': False,
+            'old_tp': None,
+            'old_sl': None,
+            'new_tp': None,
+            'new_sl': None,
+            'errors': [],
+        }
+
+        # 0.1% threshold to account for rounding differences
+        PRICE_CHANGE_THRESHOLD_PERCENT = 0.001  # 0.1%
+
+        try:
+            import sys
+            
+            # ============================================================
+            # STEP 1: Get current TP/SL orders from Hyperliquid API FIRST
+            # This is the source of truth - not the in-memory cache
+            # ============================================================
+            print(f"[TPSL UPDATE] {symbol} - Fetching current orders from Hyperliquid API...", file=sys.stderr, flush=True)
+            logger.info(f"[TPSL UPDATE] {symbol} - Fetching current orders from Hyperliquid API")
+            
+            current_tpsl = self.get_tpsl_orders(db, symbol)
+            current_tp = current_tpsl.get('tp')
+            current_sl = current_tpsl.get('sl')
+            all_tp_orders = current_tpsl.get('all_tp_orders', [])
+            all_sl_orders = current_tpsl.get('all_sl_orders', [])
+
+            # Extract current prices from API
+            current_tp_price = current_tp.get('trigger_price') if current_tp else None
+            current_sl_price = current_sl.get('trigger_price') if current_sl else None
+            
+            # Record old values
+            result['old_tp'] = current_tp_price
+            result['old_sl'] = current_sl_price
+            
+            print(f"[TPSL UPDATE] {symbol} - API returned: TP={current_tp_price}, SL={current_sl_price}", file=sys.stderr, flush=True)
+            print(f"[TPSL UPDATE] {symbol} - Requested: TP={new_tp_price}, SL={new_sl_price}", file=sys.stderr, flush=True)
+            print(f"[TPSL UPDATE] {symbol} - Found {len(all_tp_orders)} TP orders, {len(all_sl_orders)} SL orders", file=sys.stderr, flush=True)
+            logger.info(f"[TPSL UPDATE] {symbol} - API: TP={current_tp_price}, SL={current_sl_price} | Requested: TP={new_tp_price}, SL={new_sl_price}")
+            
+            # ============================================================
+            # STEP 2: Compare existing prices with requested prices
+            # If they match within threshold → SKIP to avoid duplicates
+            # ============================================================
+            tp_matches_existing = False
+            sl_matches_existing = False
+            
+            # Check if TP matches existing order
+            if new_tp_price is not None and current_tp_price is not None and current_tp_price > 0:
+                tp_diff_percent = abs(current_tp_price - new_tp_price) / current_tp_price
+                if tp_diff_percent <= PRICE_CHANGE_THRESHOLD_PERCENT:
+                    tp_matches_existing = True
+                    print(f"[TPSL UPDATE] {symbol} TP MATCHES existing: {current_tp_price} ≈ {new_tp_price} (diff={tp_diff_percent:.4%}) - SKIP", file=sys.stderr, flush=True)
+                    logger.info(f"[TPSL UPDATE] {symbol} TP matches existing order - SKIPPING to avoid duplicate")
+                else:
+                    print(f"[TPSL UPDATE] {symbol} TP DIFFERS: {current_tp_price} vs {new_tp_price} (diff={tp_diff_percent:.4%}) - WILL UPDATE", file=sys.stderr, flush=True)
+                    logger.info(f"[TPSL UPDATE] {symbol} TP differs from existing - will update")
+            elif new_tp_price is None:
+                # No new TP requested, skip TP update
+                tp_matches_existing = True
+                print(f"[TPSL UPDATE] {symbol} No new TP requested - SKIP", file=sys.stderr, flush=True)
+            
+            # Check if SL matches existing order
+            if new_sl_price is not None and current_sl_price is not None and current_sl_price > 0:
+                sl_diff_percent = abs(current_sl_price - new_sl_price) / current_sl_price
+                if sl_diff_percent <= PRICE_CHANGE_THRESHOLD_PERCENT:
+                    sl_matches_existing = True
+                    print(f"[TPSL UPDATE] {symbol} SL MATCHES existing: {current_sl_price} ≈ {new_sl_price} (diff={sl_diff_percent:.4%}) - SKIP", file=sys.stderr, flush=True)
+                    logger.info(f"[TPSL UPDATE] {symbol} SL matches existing order - SKIPPING to avoid duplicate")
+                else:
+                    print(f"[TPSL UPDATE] {symbol} SL DIFFERS: {current_sl_price} vs {new_sl_price} (diff={sl_diff_percent:.4%}) - WILL UPDATE", file=sys.stderr, flush=True)
+                    logger.info(f"[TPSL UPDATE] {symbol} SL differs from existing - will update")
+            elif new_sl_price is None:
+                # No new SL requested, skip SL update
+                sl_matches_existing = True
+                print(f"[TPSL UPDATE] {symbol} No new SL requested - SKIP", file=sys.stderr, flush=True)
+            
+            # ============================================================
+            # STEP 3: If BOTH match existing orders → SKIP ENTIRELY
+            # ============================================================
+            if tp_matches_existing and sl_matches_existing:
+                print(f"[TPSL UPDATE] {symbol} - BOTH TP and SL match existing orders - SKIPPING UPDATE ENTIRELY", file=sys.stderr, flush=True)
+                logger.info(f"[TPSL UPDATE] {symbol} - Both TP and SL match existing orders, SKIPPING update entirely")
+                
+                # Update cache with current values from API
+                _set_cached_tpsl(self.wallet_address, symbol, current_tp_price, current_sl_price)
+                
+                return result
+
+            # Get position info if not provided
+            if position_size is None or is_long is None:
+                positions = self.get_positions(db)
+                position = next((p for p in positions if p.get('coin') == symbol), None)
+                if position:
+                    position_size = abs(position.get('szi', 0))
+                    is_long = position.get('szi', 0) > 0
+                else:
+                    result['success'] = False
+                    result['errors'].append(f"No position found for {symbol}")
+                    return result
+
+            if position_size <= 0:
+                result['success'] = False
+                result['errors'].append(f"Invalid position size: {position_size}")
+                return result
+
+            # Get precision for price rounding
+            precision = self._get_asset_precision(symbol)
+            price_tick = precision.get('price_tick')
+            price_decimals = precision.get('price_decimals', 2)
+            size_decimals = precision.get('size_decimals', 5)
+
+            # ============================================================
+            # STEP 4: Determine which orders need to be updated
+            # At this point, we know at least one of TP or SL needs updating
+            # ============================================================
+            tp_needs_update = not tp_matches_existing and new_tp_price is not None
+            sl_needs_update = not sl_matches_existing and new_sl_price is not None
+            
+            print(f"[TPSL UPDATE] {symbol} - Update decision: TP_update={tp_needs_update}, SL_update={sl_needs_update}", file=sys.stderr, flush=True)
+            logger.info(f"[TPSL UPDATE] {symbol} - Update decision: TP_update={tp_needs_update}, SL_update={sl_needs_update}")
+
+            # Cancel and replace TP if needed
+            if tp_needs_update:
+                # Cancel ALL existing TP orders first (not just the first one)
+                tp_cancel_success = True
+                all_tp_orders = current_tpsl.get('all_tp_orders', [])
+                
+                if all_tp_orders:
+                    logger.info(f"[TPSL] Found {len(all_tp_orders)} existing TP orders to cancel for {symbol}")
+                    for tp_order_to_cancel in all_tp_orders:
+                        oid = tp_order_to_cancel.get('oid')
+                        if oid:
+                            try:
+                                logger.info(f"[TPSL] Attempting to cancel TP order {oid} for {symbol}")
+                                cancel_result = self.cancel_order(db, oid, symbol)
+                                if cancel_result:
+                                    logger.info(f"[TPSL] Successfully cancelled TP order {oid} for {symbol}")
+                                else:
+                                    logger.warning(f"[TPSL] Failed to cancel TP order {oid}")
+                                    result['errors'].append(f"Failed to cancel TP order {oid}")
+                            except Exception as cancel_err:
+                                logger.warning(f"[TPSL] Exception cancelling TP order {oid}: {cancel_err}")
+                                result['errors'].append(f"Failed to cancel TP {oid}: {str(cancel_err)}")
+                    
+                    # Small delay to ensure exchange processes all cancellations
+                    import time as time_module
+                    time_module.sleep(0.5)
+                elif current_tp and current_tp.get('oid'):
+                    # Fallback: cancel single TP order if all_tp_orders not available
+                    try:
+                        logger.info(f"[TPSL] Attempting to cancel old TP order {current_tp['oid']} for {symbol}")
+                        cancel_result = self.cancel_order(db, current_tp['oid'], symbol)
+                        if cancel_result:
+                            logger.info(f"[TPSL] Successfully cancelled old TP order {current_tp['oid']} for {symbol}")
+                            import time as time_module
+                            time_module.sleep(0.5)
+                        else:
+                            logger.warning(f"[TPSL] Failed to cancel old TP order {current_tp['oid']} - will not place new TP")
+                            tp_cancel_success = False
+                            result['errors'].append(f"Failed to cancel old TP order {current_tp['oid']}")
+                    except Exception as cancel_err:
+                        logger.warning(f"[TPSL] Exception cancelling old TP order: {cancel_err}")
+                        tp_cancel_success = False
+                        result['errors'].append(f"Failed to cancel old TP: {str(cancel_err)}")
+
+                # Only place new TP order if cancellation succeeded (or there was no existing order)
+                if tp_cancel_success:
+                    try:
+                        # Round TP price
+                        rounded_tp = self._round_to_precision(
+                            new_tp_price,
+                            price_decimals,
+                            size_decimals,
+                            is_price=True,
+                            price_tick=price_tick,
+                            is_buy=not is_long,  # TP closes position (opposite direction)
+                        )
+
+                        tp_order_type = {"trigger": {
+                            "triggerPx": rounded_tp,
+                            "isMarket": False,
+                            "tpsl": "tp"
+                        }}
+
+                        # Prepare order parameters
+                        tp_order_params = {
+                            "name": symbol,
+                            "is_buy": not is_long,
+                            "sz": position_size,
+                            "limit_px": rounded_tp,
+                            "order_type": tp_order_type,
+                            "reduce_only": True
+                        }
+
+                        # Add builder params only for mainnet
+                        builder_params = self._get_builder_params()
+                        if builder_params:
+                            tp_order_params["builder"] = builder_params
+
+                        tp_result = self.sdk_exchange.order(**tp_order_params)
+
+                        if tp_result.get("status") == "ok":
+                            result['tp_updated'] = True
+                            result['new_tp'] = rounded_tp
+                            logger.info(f"[TPSL] Placed new TP order for {symbol} at ${rounded_tp}")
+                        else:
+                            error_msg = tp_result.get("response", "Unknown error")
+                            result['errors'].append(f"Failed to place new TP: {error_msg}")
+                            logger.error(f"[TPSL] Failed to place new TP order: {error_msg}")
+
+                    except Exception as tp_err:
+                        result['errors'].append(f"TP order error: {str(tp_err)}")
+                        logger.error(f"[TPSL] Error placing TP order: {tp_err}", exc_info=True)
+
+            # Cancel and replace SL if needed
+            if sl_needs_update:
+                # Cancel ALL existing SL orders first (not just the first one)
+                sl_cancel_success = True
+                all_sl_orders = current_tpsl.get('all_sl_orders', [])
+                
+                if all_sl_orders:
+                    logger.info(f"[TPSL] Found {len(all_sl_orders)} existing SL orders to cancel for {symbol}")
+                    for sl_order_to_cancel in all_sl_orders:
+                        oid = sl_order_to_cancel.get('oid')
+                        if oid:
+                            try:
+                                logger.info(f"[TPSL] Attempting to cancel SL order {oid} for {symbol}")
+                                cancel_result = self.cancel_order(db, oid, symbol)
+                                if cancel_result:
+                                    logger.info(f"[TPSL] Successfully cancelled SL order {oid} for {symbol}")
+                                else:
+                                    logger.warning(f"[TPSL] Failed to cancel SL order {oid}")
+                                    result['errors'].append(f"Failed to cancel SL order {oid}")
+                            except Exception as cancel_err:
+                                logger.warning(f"[TPSL] Exception cancelling SL order {oid}: {cancel_err}")
+                                result['errors'].append(f"Failed to cancel SL {oid}: {str(cancel_err)}")
+                    
+                    # Small delay to ensure exchange processes all cancellations
+                    import time as time_module
+                    time_module.sleep(0.5)
+                elif current_sl and current_sl.get('oid'):
+                    # Fallback: cancel single SL order if all_sl_orders not available
+                    try:
+                        logger.info(f"[TPSL] Attempting to cancel old SL order {current_sl['oid']} for {symbol}")
+                        cancel_result = self.cancel_order(db, current_sl['oid'], symbol)
+                        if cancel_result:
+                            logger.info(f"[TPSL] Successfully cancelled old SL order {current_sl['oid']} for {symbol}")
+                            import time as time_module
+                            time_module.sleep(0.5)
+                        else:
+                            logger.warning(f"[TPSL] Failed to cancel old SL order {current_sl['oid']} - will not place new SL")
+                            sl_cancel_success = False
+                            result['errors'].append(f"Failed to cancel old SL order {current_sl['oid']}")
+                    except Exception as cancel_err:
+                        logger.warning(f"[TPSL] Exception cancelling old SL order: {cancel_err}")
+                        sl_cancel_success = False
+                        result['errors'].append(f"Failed to cancel old SL: {str(cancel_err)}")
+
+                # Only place new SL order if cancellation succeeded (or there was no existing order)
+                if sl_cancel_success:
+                    try:
+                        # Round SL price
+                        rounded_sl = self._round_to_precision(
+                            new_sl_price,
+                            price_decimals,
+                            size_decimals,
+                            is_price=True,
+                            price_tick=price_tick,
+                            is_buy=not is_long,  # SL closes position (opposite direction)
+                        )
+
+                        sl_order_type = {"trigger": {
+                            "triggerPx": rounded_sl,
+                            "isMarket": False,
+                            "tpsl": "sl"
+                        }}
+
+                        # Prepare order parameters
+                        sl_order_params = {
+                            "name": symbol,
+                            "is_buy": not is_long,
+                            "sz": position_size,
+                            "limit_px": rounded_sl,
+                            "order_type": sl_order_type,
+                            "reduce_only": True
+                        }
+
+                        # Add builder params only for mainnet
+                        builder_params = self._get_builder_params()
+                        if builder_params:
+                            sl_order_params["builder"] = builder_params
+
+                        sl_result = self.sdk_exchange.order(**sl_order_params)
+
+                        if sl_result.get("status") == "ok":
+                            result['sl_updated'] = True
+                            result['new_sl'] = rounded_sl
+                            logger.info(f"[TPSL] Placed new SL order for {symbol} at ${rounded_sl}")
+                        else:
+                            error_msg = sl_result.get("response", "Unknown error")
+                            result['errors'].append(f"Failed to place new SL: {error_msg}")
+                            logger.error(f"[TPSL] Failed to place new SL order: {error_msg}")
+
+                    except Exception as sl_err:
+                        result['errors'].append(f"SL order error: {str(sl_err)}")
+                        logger.error(f"[TPSL] Error placing SL order: {sl_err}", exc_info=True)
+
+            # Set overall success based on errors
+            if result['errors']:
+                result['success'] = False
+
+            # ============================================================
+            # STEP 5: Update cache after successful operations
+            # ============================================================
+            # Determine final TP/SL prices to cache (use new prices if updated, otherwise keep old)
+            final_tp_price = result['new_tp'] if result['tp_updated'] else result['old_tp']
+            final_sl_price = result['new_sl'] if result['sl_updated'] else result['old_sl']
+            
+            # Update cache with current state
+            if final_tp_price is not None or final_sl_price is not None:
+                _set_cached_tpsl(self.wallet_address, symbol, final_tp_price, final_sl_price)
+                print(f"[TPSL CACHE] {symbol} - Updated cache after operation: TP={final_tp_price}, SL={final_sl_price}", file=sys.stderr, flush=True)
+
+            # Log summary
+            logger.info(
+                f"[TPSL] Update complete for {symbol}: "
+                f"TP {result['old_tp']}→{result['new_tp']} (updated={result['tp_updated']}), "
+                f"SL {result['old_sl']}→{result['new_sl']} (updated={result['sl_updated']})"
+            )
+
+            self._record_exchange_action(
+                action_type="update_tpsl",
+                status="success" if result['success'] else "partial",
+                symbol=symbol,
+                request_payload={
+                    "symbol": symbol,
+                    "new_tp_price": new_tp_price,
+                    "new_sl_price": new_sl_price,
+                    "position_size": position_size,
+                    "is_long": is_long,
+                },
+                response_payload=result,
+                error_message="; ".join(result['errors']) if result['errors'] else None,
+            )
+
+            return result
+
+        except Exception as e:
+            result['success'] = False
+            result['errors'].append(str(e))
+            self._record_exchange_action(
+                action_type="update_tpsl",
+                status="error",
+                symbol=symbol,
+                request_payload={
+                    "symbol": symbol,
+                    "new_tp_price": new_tp_price,
+                    "new_sl_price": new_sl_price,
+                },
+                error_message=str(e),
+            )
+            logger.error(f"[TPSL] Failed to update TP/SL for {symbol}: {e}", exc_info=True)
+            return result
 
     def get_order_status(self, db: Session, order_id: int) -> Dict[str, Any]:
         """
@@ -1679,14 +2553,22 @@ class HyperliquidTradingClient:
             # Place main order using SDK
             logger.info(f"[SDK] Placing main order: {symbol} {'BUY' if is_buy else 'SELL'} {size}@{price} TIF={time_in_force}")
 
-            main_result = self.sdk_exchange.order(
-                name=symbol,
-                is_buy=is_buy,
-                sz=size,
-                limit_px=price,
-                order_type=order_type,
-                reduce_only=reduce_only
-            )
+            # Prepare order parameters
+            main_order_params = {
+                "name": symbol,
+                "is_buy": is_buy,
+                "sz": size,
+                "limit_px": price,
+                "order_type": order_type,
+                "reduce_only": reduce_only
+            }
+
+            # Add builder params only for mainnet
+            builder_params = self._get_builder_params()
+            if builder_params:
+                main_order_params["builder"] = builder_params
+
+            main_result = self.sdk_exchange.order(**main_order_params)
 
             logger.info(f"[SDK] Main order result: {main_result}")
 
@@ -1743,14 +2625,22 @@ class HyperliquidTradingClient:
                             "tpsl": "tp"
                         }}
 
-                        tp_result = self.sdk_exchange.order(
-                            name=symbol,
-                            is_buy=not is_buy,  # Opposite direction
-                            sz=size,
-                            limit_px=take_profit_price,
-                            order_type=tp_order_type,
-                            reduce_only=True
-                        )
+                        # Prepare order parameters
+                        tp_order_params = {
+                            "name": symbol,
+                            "is_buy": not is_buy,
+                            "sz": size,
+                            "limit_px": take_profit_price,
+                            "order_type": tp_order_type,
+                            "reduce_only": True
+                        }
+
+                        # Add builder params only for mainnet
+                        builder_params = self._get_builder_params()
+                        if builder_params:
+                            tp_order_params["builder"] = builder_params
+
+                        tp_result = self.sdk_exchange.order(**tp_order_params)
 
                         logger.info(f"[SDK] TP order result: {tp_result}")
 
@@ -1776,14 +2666,22 @@ class HyperliquidTradingClient:
                             "tpsl": "sl"
                         }}
 
-                        sl_result = self.sdk_exchange.order(
-                            name=symbol,
-                            is_buy=not is_buy,  # Opposite direction
-                            sz=size,
-                            limit_px=stop_loss_price,
-                            order_type=sl_order_type,
-                            reduce_only=True
-                        )
+                        # Prepare SL order parameters
+                        sl_order_params = {
+                            "name": symbol,
+                            "is_buy": not is_buy,  # Opposite direction
+                            "sz": size,
+                            "limit_px": stop_loss_price,
+                            "order_type": sl_order_type,
+                            "reduce_only": True
+                        }
+
+                        # Add builder params only for mainnet
+                        builder_params = self._get_builder_params()
+                        if builder_params:
+                            sl_order_params["builder"] = builder_params
+
+                        sl_result = self.sdk_exchange.order(**sl_order_params)
 
                         logger.info(f"[SDK] SL order result: {sl_result}")
 
@@ -1820,6 +2718,11 @@ class HyperliquidTradingClient:
 
             if error_msg:
                 order_result["error"] = error_msg
+
+            # Update TPSL cache after successful order placement with TP/SL
+            if status in ["filled", "resting"] and (take_profit_price or stop_loss_price):
+                _set_cached_tpsl(self.wallet_address, symbol, take_profit_price, stop_loss_price)
+                print(f"[TPSL CACHE] {symbol} - Cached new TP/SL from place_order_with_tpsl: TP={take_profit_price}, SL={stop_loss_price}", file=sys.stderr, flush=True)
 
             logger.info(
                 f"[SDK] Order result: status={status} order_id={order_id} "

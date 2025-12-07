@@ -98,15 +98,16 @@ def _serialize_symbols(symbols: List[Dict[str, str]]) -> str:
     return json.dumps(sanitized)
 
 
-def _validate_symbol_tradability(symbol: str) -> bool:
+def _validate_symbol_tradability(symbol: str, environment: str = "testnet") -> bool:
     """
     Test if a symbol can actually fetch price data (i.e., is tradable).
 
     Uses silent validation method that doesn't log errors for invalid symbols.
     """
     try:
-        from services.hyperliquid_market_data import hyperliquid_client
-        return hyperliquid_client.check_symbol_tradability(symbol)
+        from services.hyperliquid_market_data import get_hyperliquid_client_for_environment
+        client = get_hyperliquid_client_for_environment(environment)
+        return client.check_symbol_tradability(symbol)
     except Exception:
         return False
 
@@ -139,7 +140,7 @@ def fetch_remote_symbols(environment: str = "testnet") -> List[Dict[str, str]]:
         seen.add(symbol)
 
         # Validate symbol is actually tradable
-        if not _validate_symbol_tradability(symbol):
+        if not _validate_symbol_tradability(symbol, environment):
             logger.debug(f"Skipping symbol {symbol} (not tradable on Hyperliquid)")
             invalid_count += 1
             continue

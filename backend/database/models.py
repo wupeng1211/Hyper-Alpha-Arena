@@ -595,6 +595,46 @@ class KlineAIAnalysisLog(Base):
     account = relationship("Account")
 
 
+class AiPromptConversation(Base):
+    """AI Prompt Generation Conversation Sessions"""
+    __tablename__ = "ai_prompt_conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(200), nullable=False, default="New Strategy Prompt")
+    created_at = Column(TIMESTAMP, server_default=func.current_timestamp(), index=True)
+    updated_at = Column(
+        TIMESTAMP, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    # Relationships
+    user = relationship("User")
+    messages = relationship(
+        "AiPromptMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="AiPromptMessage.created_at"
+    )
+
+
+class AiPromptMessage(Base):
+    """Messages in AI Prompt Generation Conversations"""
+    __tablename__ = "ai_prompt_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("ai_prompt_conversations.id"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # "user" or "assistant"
+    content = Column(Text, nullable=False)  # Message content (markdown)
+
+    # For assistant messages: extracted prompt from ```prompt``` code block
+    prompt_result = Column(Text, nullable=True)
+
+    created_at = Column(TIMESTAMP, server_default=func.current_timestamp(), index=True)
+
+    # Relationships
+    conversation = relationship("AiPromptConversation", back_populates="messages")
+
+
 # CRYPTO market trading configuration constants
 CRYPTO_MIN_COMMISSION = 0.1  # $0.1 minimum commission
 CRYPTO_COMMISSION_RATE = 0.001  # 0.1% commission rate

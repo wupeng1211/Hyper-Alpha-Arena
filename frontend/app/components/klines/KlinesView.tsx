@@ -378,11 +378,12 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
             <CardHeader className="py-3">
               <CardTitle className="text-sm">Technical Indicators</CardTitle>
             </CardHeader>
-            <CardContent className="pt-0 space-y-3">
-              <div>
-                <div className="text-xs text-muted-foreground mb-2">Trend Analysis</div>
-                <div className="grid grid-cols-5 gap-1">
-                  {['MA5', 'MA10', 'MA20', 'EMA20', 'EMA50'].map(indicator => (
+            <CardContent className="pt-0 space-y-1.5">
+              {/* Row 1: Trend */}
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-muted-foreground font-medium min-w-[52px]">Trend</span>
+                <div className="flex gap-1 flex-wrap">
+                  {['MA5', 'MA10', 'MA20', 'EMA20', 'EMA50', 'EMA100'].map(indicator => (
                     <button
                       key={indicator}
                       onClick={() => {
@@ -392,7 +393,7 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
                             : [...prev, indicator]
                         )
                       }}
-                      className={`px-2 py-1 text-xs rounded transition-colors ${
+                      className={`px-1.5 py-0.5 text-[10px] rounded transition-colors min-w-[38px] ${
                         selectedIndicators.includes(indicator)
                           ? 'bg-primary/20 text-primary border border-primary/30'
                           : 'hover:bg-muted border'
@@ -404,10 +405,11 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
                 </div>
               </div>
 
-              <div>
-                <div className="text-xs text-muted-foreground mb-2">Momentum Oscillators & Volatility</div>
-                <div className="grid grid-cols-5 gap-1">
-                  {['RSI14', 'RSI7', 'MACD', 'BOLL', 'ATR14'].map(indicator => (
+              {/* Row 2: Volume */}
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-muted-foreground font-medium min-w-[52px]">Volume</span>
+                <div className="flex gap-1 flex-wrap">
+                  {['VWAP', 'OBV'].map(indicator => (
                     <button
                       key={indicator}
                       onClick={() => {
@@ -417,7 +419,59 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
                             : [...prev, indicator]
                         )
                       }}
-                      className={`px-2 py-1 text-xs rounded transition-colors ${
+                      className={`px-1.5 py-0.5 text-[10px] rounded transition-colors min-w-[38px] ${
+                        selectedIndicators.includes(indicator)
+                          ? 'bg-primary/20 text-primary border border-primary/30'
+                          : 'hover:bg-muted border'
+                      }`}
+                    >
+                      {indicator}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Row 3: Momentum */}
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-muted-foreground font-medium min-w-[52px]">Momentum</span>
+                <div className="flex gap-1 flex-wrap">
+                  {['RSI14', 'RSI7', 'STOCH', 'MACD'].map(indicator => (
+                    <button
+                      key={indicator}
+                      onClick={() => {
+                        setSelectedIndicators(prev =>
+                          prev.includes(indicator)
+                            ? prev.filter(i => i !== indicator)
+                            : [...prev, indicator]
+                        )
+                      }}
+                      className={`px-1.5 py-0.5 text-[10px] rounded transition-colors min-w-[38px] ${
+                        selectedIndicators.includes(indicator)
+                          ? 'bg-primary/20 text-primary border border-primary/30'
+                          : 'hover:bg-muted border'
+                      }`}
+                    >
+                      {indicator}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Row 4: Volatility */}
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-muted-foreground font-medium min-w-[52px]">Volatility</span>
+                <div className="flex gap-1 flex-wrap">
+                  {['BOLL', 'ATR14'].map(indicator => (
+                    <button
+                      key={indicator}
+                      onClick={() => {
+                        setSelectedIndicators(prev =>
+                          prev.includes(indicator)
+                            ? prev.filter(i => i !== indicator)
+                            : [...prev, indicator]
+                        )
+                      }}
+                      className={`px-1.5 py-0.5 text-[10px] rounded transition-colors min-w-[38px] ${
                         selectedIndicators.includes(indicator)
                           ? 'bg-primary/20 text-primary border border-primary/30'
                           : 'hover:bg-muted border'

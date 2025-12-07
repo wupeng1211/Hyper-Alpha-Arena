@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MIGRATIONS = [
     "add_environment_to_crypto_klines.py",
     "add_prompt_template_fields.py",
+    "add_ai_prompt_chat.py",
 ]
 
 def check_migration_table():

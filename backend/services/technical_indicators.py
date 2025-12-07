@@ -48,6 +48,8 @@ def calculate_indicators(kline_data: List[Dict[str, Any]], indicators: List[str]
                     results['EMA20'] = _calculate_ema(df, 20)
                 elif indicator == 'EMA50':
                     results['EMA50'] = _calculate_ema(df, 50)
+                elif indicator == 'EMA100':
+                    results['EMA100'] = _calculate_ema(df, 100)
                 elif indicator == 'MA5':
                     results['MA5'] = _calculate_sma(df, 5)
                 elif indicator == 'MA10':
@@ -64,6 +66,12 @@ def calculate_indicators(kline_data: List[Dict[str, Any]], indicators: List[str]
                     results['BOLL'] = _calculate_bollinger_bands(df)
                 elif indicator == 'ATR14':
                     results['ATR14'] = _calculate_atr(df, 14)
+                elif indicator == 'VWAP':
+                    results['VWAP'] = _calculate_vwap(df)
+                elif indicator == 'STOCH':
+                    results['STOCH'] = _calculate_stochastic(df)
+                elif indicator == 'OBV':
+                    results['OBV'] = _calculate_obv(df)
                 else:
                     logger.warning(f"Unknown indicator: {indicator}")
 
@@ -177,6 +185,35 @@ def _calculate_atr(df: pd.DataFrame, period: int) -> List[float]:
     return atr.fillna(0).tolist()
 
 
+def _calculate_vwap(df: pd.DataFrame) -> List[float]:
+    """计算成交量加权平均价"""
+    try:
+        # VWAP 需要 DatetimeIndex
+        df_copy = df.copy()
+        df_copy['datetime'] = pd.to_datetime(df_copy['timestamp'], unit='ms')
+        df_copy = df_copy.set_index('datetime')
+        vwap = ta.vwap(df_copy['high'], df_copy['low'], df_copy['close'], df_copy['volume'])
+        return vwap.fillna(0).tolist()
+    except Exception as e:
+        logger.error(f"Error calculating VWAP: {e}")
+        return None
+
+
+def _calculate_stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> Dict[str, List[float]]:
+    """计算随机震荡指标"""
+    stoch = ta.stoch(df['high'], df['low'], df['close'], k=k_period, d=d_period)
+    return {
+        'k': stoch[f'STOCHk_{k_period}_{d_period}_3'].fillna(50).tolist(),
+        'd': stoch[f'STOCHd_{k_period}_{d_period}_3'].fillna(50).tolist()
+    }
+
+
+def _calculate_obv(df: pd.DataFrame) -> List[float]:
+    """计算能量潮指标"""
+    obv = ta.obv(df['close'], df['volume'])
+    return obv.fillna(0).tolist()
+
+
 def get_available_indicators() -> List[Dict[str, str]]:
     """获取支持的技术指标列表"""
     return [
@@ -185,9 +222,13 @@ def get_available_indicators() -> List[Dict[str, str]]:
         {'name': 'MA20', 'description': '20期简单移动平均线'},
         {'name': 'EMA20', 'description': '20期指数移动平均线'},
         {'name': 'EMA50', 'description': '50期指数移动平均线'},
+        {'name': 'EMA100', 'description': '100期指数移动平均线'},
         {'name': 'MACD', 'description': '移动平均收敛发散指标'},
         {'name': 'RSI14', 'description': '14期相对强弱指数'},
         {'name': 'RSI7', 'description': '7期相对强弱指数'},
         {'name': 'BOLL', 'description': '布林带'},
         {'name': 'ATR14', 'description': '14期平均真实波幅'},
+        {'name': 'VWAP', 'description': '成交量加权平均价'},
+        {'name': 'STOCH', 'description': '随机震荡指标'},
+        {'name': 'OBV', 'description': '能量潮指标'},
     ]

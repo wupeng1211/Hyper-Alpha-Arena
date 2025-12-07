@@ -105,10 +105,10 @@ def _get_hyperliquid_positions(db: Session, account_id: Optional[int], environme
         encrypted_key = wallet.private_key_encrypted
 
         try:
-            cached_state = get_cached_account_state(account.id)
+            cached_state = get_cached_account_state(account.id, environment)
             account_state = cached_state["data"] if cached_state else None
 
-            cached_positions = get_cached_positions(account.id)
+            cached_positions = get_cached_positions(account.id, environment)
             positions_data = cached_positions["data"] if cached_positions else None
 
             wallet_address = None
@@ -556,6 +556,8 @@ def get_model_chat(
     account_id: Optional[int] = None,
     trading_mode: Optional[str] = Query(None, regex="^(paper|testnet|mainnet)$"),
     wallet_address: Optional[str] = Query(None),
+    before_time: Optional[str] = Query(None, description="ISO format timestamp for cursor-based pagination"),
+    include_snapshots: bool = Query(False, description="Include prompt/reasoning/decision snapshots (heavy data)"),
     db: Session = Depends(get_db),
 ):
     """Return recent AI decision logs as chat-style summaries, filtered by trading mode."""
@@ -570,6 +572,14 @@ def get_model_chat(
 
     if wallet_address:
         query = query.filter(AIDecisionLog.wallet_address == wallet_address)
+
+    # Cursor-based pagination: only get records before the specified time
+    if before_time:
+        try:
+            before_dt = datetime.fromisoformat(before_time.replace('Z', '+00:00'))
+            query = query.filter(AIDecisionLog.decision_time < before_dt)
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Invalid before_time parameter: {before_time}, error: {e}")
 
     # Filter by trading mode based on hyperliquid_environment field
     if trading_mode:
@@ -625,37 +635,62 @@ def get_model_chat(
                     except Exception:
                         trigger_latency = None
 
-        entries.append(
-            {
-                "id": log.id,
-                "account_id": account.id,
-                "account_name": account.name,
-                "model": account.model,
-                "operation": log.operation,
-                "symbol": log.symbol,
-                "reason": log.reason,
-                "executed": log.executed == "true",
-                "prev_portion": float(log.prev_portion or 0),
-                "target_portion": float(log.target_portion or 0),
-                "total_balance": float(log.total_balance or 0),
-                "order_id": log.order_id,
-                "decision_time": log.decision_time.isoformat()
-                if log.decision_time
-                else None,
-                "trigger_mode": trigger_mode,
-                "strategy_enabled": strategy_enabled,
-                "last_trigger_at": last_trigger_iso,
-                "trigger_latency_seconds": trigger_latency,
-                "prompt_snapshot": log.prompt_snapshot,
-                "reasoning_snapshot": log.reasoning_snapshot,
-                "decision_snapshot": log.decision_snapshot,
-                "wallet_address": log.wallet_address,
-            }
-        )
+        entry = {
+            "id": log.id,
+            "account_id": account.id,
+            "account_name": account.name,
+            "model": account.model,
+            "operation": log.operation,
+            "symbol": log.symbol,
+            "reason": log.reason,
+            "executed": log.executed == "true",
+            "prev_portion": float(log.prev_portion or 0),
+            "target_portion": float(log.target_portion or 0),
+            "total_balance": float(log.total_balance or 0),
+            "order_id": log.order_id,
+            "decision_time": log.decision_time.isoformat()
+            if log.decision_time
+            else None,
+            "trigger_mode": trigger_mode,
+            "strategy_enabled": strategy_enabled,
+            "last_trigger_at": last_trigger_iso,
+            "trigger_latency_seconds": trigger_latency,
+            "wallet_address": log.wallet_address,
+        }
+
+        # Only include heavy snapshot fields when explicitly requested
+        if include_snapshots:
+            entry["prompt_snapshot"] = log.prompt_snapshot
+            entry["reasoning_snapshot"] = log.reasoning_snapshot
+            entry["decision_snapshot"] = log.decision_snapshot
+
+        entries.append(entry)
 
     return {
         "generated_at": datetime.utcnow().isoformat(),
         "entries": entries,
+    }
+
+
+@router.get("/model-chat/{decision_id}/snapshots")
+def get_model_chat_snapshots(
+    decision_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return snapshot fields for a single AI decision log entry."""
+    log = db.query(AIDecisionLog).filter(AIDecisionLog.id == decision_id).first()
+
+    if not log:
+        return {
+            "error": "Decision not found",
+            "id": decision_id,
+        }
+
+    return {
+        "id": log.id,
+        "prompt_snapshot": log.prompt_snapshot,
+        "reasoning_snapshot": log.reasoning_snapshot,
+        "decision_snapshot": log.decision_snapshot,
     }
 
 

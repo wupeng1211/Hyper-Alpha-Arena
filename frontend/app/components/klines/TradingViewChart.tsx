@@ -37,12 +37,16 @@ export default function TradingViewChart({
   const ma20SeriesRef = useRef<any>(null)
   const ema20SeriesRef = useRef<any>(null)
   const ema50SeriesRef = useRef<any>(null)
+  const ema100SeriesRef = useRef<any>(null)
+  const vwapSeriesRef = useRef<any>(null)
   const bollUpperSeriesRef = useRef<any>(null)
   const bollMiddleSeriesRef = useRef<any>(null)
   const bollLowerSeriesRef = useRef<any>(null)
   const rsiSeriesRef = useRef<any>(null)
   const macdSeriesRef = useRef<any>(null)
   const atrSeriesRef = useRef<any>(null)
+  const stochSeriesRef = useRef<any>(null)
+  const obvSeriesRef = useRef<any>(null)
   const [loading, setLoading] = useState(false)
   const [hasData, setHasData] = useState(false)
   const [chartData, setChartData] = useState<any[]>([])
@@ -52,10 +56,11 @@ export default function TradingViewChart({
   const indicatorPaneRef = useRef<any>(null)
   const indicatorLabelRef = useRef<any>(null)
   const prevIndicatorsRef = useRef<string[]>([])
+  const prevSubplotIndicatorsRef = useRef<string[]>([])
 
   // 检测是否需要重新初始化图表（子图结构变化）
   const needsChartReinit = (prevIndicators: string[], newIndicators: string[]) => {
-    const subplotIndicators = ['RSI14', 'RSI7', 'MACD', 'ATR14']
+    const subplotIndicators = ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV']
     const prevSubplots = prevIndicators.filter(ind => subplotIndicators.includes(ind))
     const newSubplots = newIndicators.filter(ind => subplotIndicators.includes(ind))
 
@@ -165,7 +170,7 @@ export default function TradingViewChart({
       const container = chartContainerRef.current
 
       // 判断是否需要指标子图
-      const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+      const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
       const needsSubplot = subplotIndicators.length > 0
 
       // 创建图表 - 使用正确的Panel架构
@@ -280,6 +285,18 @@ export default function TradingViewChart({
         visible: false,
       })
 
+      const ema100Series = chart.addSeries(LineSeries, {
+        color: '#ec4899',
+        lineWidth: 2,
+        visible: false,
+      })
+
+      const vwapSeries = chart.addSeries(LineSeries, {
+        color: '#14b8a6',
+        lineWidth: 2,
+        visible: false,
+      })
+
       // 创建BOLL布林带系列
       const bollUpperSeries = chart.addSeries(LineSeries, {
         color: '#9333ea',
@@ -303,6 +320,8 @@ export default function TradingViewChart({
       let rsiSeries = null
       let macdSeries = null
       let atrSeries = null
+      let stochSeries = null
+      let obvSeries = null
 
       if (indicatorPane) {
         rsiSeries = indicatorPane.addSeries(LineSeries, {
@@ -333,6 +352,25 @@ export default function TradingViewChart({
           lineWidth: 2,
           visible: false,
         })
+
+        // Stochastic需要两条线（%K和%D）
+        const stochK = indicatorPane.addSeries(LineSeries, {
+          color: '#3b82f6',
+          lineWidth: 2,
+          visible: false,
+        })
+        const stochD = indicatorPane.addSeries(LineSeries, {
+          color: '#f59e0b',
+          lineWidth: 1,
+          visible: false,
+        })
+        stochSeries = { stochK, stochD }
+
+        obvSeries = indicatorPane.addSeries(LineSeries, {
+          color: '#10b981',
+          lineWidth: 2,
+          visible: false,
+        })
       }
 
       chartRef.current = chart
@@ -343,12 +381,16 @@ export default function TradingViewChart({
       ma20SeriesRef.current = ma20Series
       ema20SeriesRef.current = ema20Series
       ema50SeriesRef.current = ema50Series
+      ema100SeriesRef.current = ema100Series
+      vwapSeriesRef.current = vwapSeries
       bollUpperSeriesRef.current = bollUpperSeries
       bollMiddleSeriesRef.current = bollMiddleSeries
       bollLowerSeriesRef.current = bollLowerSeries
       rsiSeriesRef.current = rsiSeries
       macdSeriesRef.current = macdSeries
       atrSeriesRef.current = atrSeries
+      stochSeriesRef.current = stochSeries
+      obvSeriesRef.current = obvSeries
 
       // 监听容器大小变化
       let resizeTimeout: NodeJS.Timeout
@@ -378,12 +420,16 @@ export default function TradingViewChart({
           ma20SeriesRef.current = null
           ema20SeriesRef.current = null
           ema50SeriesRef.current = null
+          ema100SeriesRef.current = null
+          vwapSeriesRef.current = null
           bollUpperSeriesRef.current = null
           bollMiddleSeriesRef.current = null
           bollLowerSeriesRef.current = null
           rsiSeriesRef.current = null
           macdSeriesRef.current = null
           atrSeriesRef.current = null
+          stochSeriesRef.current = null
+          obvSeriesRef.current = null
           indicatorPaneRef.current = null
           indicatorLabelRef.current = null
         }
@@ -406,7 +452,7 @@ export default function TradingViewChart({
       const currentIndicatorData = indicatorData
 
       // 在重建前设置正确的activeSubplot，避免状态滞后
-      const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+      const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
       if (subplotIndicators.length > 0 && !activeSubplot) {
         setActiveSubplot(subplotIndicators[0])
       }
@@ -418,7 +464,7 @@ export default function TradingViewChart({
 
       try {
         // 判断是否需要指标子图
-        const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+        const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
         const needsSubplot = subplotIndicators.length > 0
 
         // 创建图表 - 使用正确的Panel架构
@@ -499,6 +545,8 @@ export default function TradingViewChart({
         const ma20Series = chart.addSeries(LineSeries, { color: '#45b7d1', lineWidth: 1, visible: false })
         const ema20Series = chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 2, visible: false })
         const ema50Series = chart.addSeries(LineSeries, { color: '#8b5cf6', lineWidth: 2, visible: false })
+        const ema100Series = chart.addSeries(LineSeries, { color: '#ec4899', lineWidth: 2, visible: false })
+        const vwapSeries = chart.addSeries(LineSeries, { color: '#14b8a6', lineWidth: 2, visible: false })
         const bollUpperSeries = chart.addSeries(LineSeries, { color: '#9333ea', lineWidth: 1, visible: false })
         const bollMiddleSeries = chart.addSeries(LineSeries, { color: '#3b82f6', lineWidth: 1, visible: false })
         const bollLowerSeries = chart.addSeries(LineSeries, { color: '#9333ea', lineWidth: 1, visible: false })
@@ -507,6 +555,8 @@ export default function TradingViewChart({
         let rsiSeries = null
         let macdSeries = null
         let atrSeries = null
+        let stochSeries = null
+        let obvSeries = null
 
         if (indicatorPane) {
           rsiSeries = indicatorPane.addSeries(LineSeries, { color: '#e11d48', lineWidth: 2, visible: false })
@@ -515,6 +565,10 @@ export default function TradingViewChart({
           const histogram = indicatorPane.addSeries(HistogramSeries, { color: '#6b7280', visible: false })
           macdSeries = { macdLine, signalLine, histogram }
           atrSeries = indicatorPane.addSeries(LineSeries, { color: '#8b5cf6', lineWidth: 2, visible: false })
+          const stochK = indicatorPane.addSeries(LineSeries, { color: '#3b82f6', lineWidth: 2, visible: false })
+          const stochD = indicatorPane.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 1, visible: false })
+          stochSeries = { stochK, stochD }
+          obvSeries = indicatorPane.addSeries(LineSeries, { color: '#10b981', lineWidth: 2, visible: false })
         }
 
         // 更新所有引用
@@ -526,12 +580,16 @@ export default function TradingViewChart({
         ma20SeriesRef.current = ma20Series
         ema20SeriesRef.current = ema20Series
         ema50SeriesRef.current = ema50Series
+        ema100SeriesRef.current = ema100Series
+        vwapSeriesRef.current = vwapSeries
         bollUpperSeriesRef.current = bollUpperSeries
         bollMiddleSeriesRef.current = bollMiddleSeries
         bollLowerSeriesRef.current = bollLowerSeries
         rsiSeriesRef.current = rsiSeries
         macdSeriesRef.current = macdSeries
         atrSeriesRef.current = atrSeries
+        stochSeriesRef.current = stochSeries
+        obvSeriesRef.current = obvSeries
 
         // 重新应用数据
         const resolvedActiveSubplot = (activeSubplot && subplotIndicators.includes(activeSubplot))
@@ -572,6 +630,22 @@ export default function TradingViewChart({
               value: value
             })).filter((item: any) => item.time && item.value > 0)
             ema50Series.setData(ema50Data)
+          }
+
+          if (currentIndicatorData.EMA100 && ema100SeriesRef.current) {
+            const ema100Data = currentIndicatorData.EMA100.map((value: number, index: number) => ({
+              time: currentChartData[index]?.time,
+              value: value
+            })).filter((item: any) => item.time && item.value > 0)
+            ema100SeriesRef.current.setData(ema100Data)
+          }
+
+          if (currentIndicatorData.VWAP && vwapSeriesRef.current) {
+            const vwapData = currentIndicatorData.VWAP.map((value: number, index: number) => ({
+              time: currentChartData[index]?.time,
+              value: value
+            })).filter((item: any) => item.time && !isNaN(item.value) && item.value !== null)
+            vwapSeriesRef.current.setData(vwapData)
           }
 
           // 重新应用BOLL数据
@@ -645,11 +719,39 @@ export default function TradingViewChart({
             })).filter((item: any) => item.time && !isNaN(item.value))
             atrSeries.setData(atrData)
           }
+
+          // 重新应用STOCH数据
+          if (currentIndicatorData.STOCH && stochSeriesRef.current) {
+            const stochData = currentIndicatorData.STOCH
+            if (stochData.k && stochSeriesRef.current.stochK) {
+              const kData = stochData.k.map((value: number, index: number) => ({
+                time: currentChartData[index]?.time,
+                value: value
+              })).filter((item: any) => item.time && !isNaN(item.value))
+              stochSeriesRef.current.stochK.setData(kData)
+            }
+            if (stochData.d && stochSeriesRef.current.stochD) {
+              const dData = stochData.d.map((value: number, index: number) => ({
+                time: currentChartData[index]?.time,
+                value: value
+              })).filter((item: any) => item.time && !isNaN(item.value))
+              stochSeriesRef.current.stochD.setData(dData)
+            }
+          }
+
+          // 重新应用OBV数据
+          if (currentIndicatorData.OBV && obvSeriesRef.current) {
+            const obvData = currentIndicatorData.OBV.map((value: number, index: number) => ({
+              time: currentChartData[index]?.time,
+              value: value
+            })).filter((item: any) => item.time && !isNaN(item.value))
+            obvSeriesRef.current.setData(obvData)
+          }
         }
 
         // 重新应用指标显示状态
         setTimeout(() => {
-          const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+          const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
           const resolvedActiveSubplot = (activeSubplot && subplotIndicators.includes(activeSubplot))
             ? activeSubplot
             : subplotIndicators[0]
@@ -660,6 +762,8 @@ export default function TradingViewChart({
           if (ma20Series) ma20Series.applyOptions({ visible: selectedIndicators.includes('MA20') })
           if (ema20Series) ema20Series.applyOptions({ visible: selectedIndicators.includes('EMA20') })
           if (ema50Series) ema50Series.applyOptions({ visible: selectedIndicators.includes('EMA50') })
+          if (ema100SeriesRef.current) ema100SeriesRef.current.applyOptions({ visible: selectedIndicators.includes('EMA100') })
+          if (vwapSeriesRef.current) vwapSeriesRef.current.applyOptions({ visible: selectedIndicators.includes('VWAP') })
 
           const showBoll = selectedIndicators.includes('BOLL')
           if (bollUpperSeries) bollUpperSeries.applyOptions({ visible: showBoll })
@@ -683,6 +787,17 @@ export default function TradingViewChart({
             const showATR = resolvedActiveSubplot === 'ATR14' && selectedIndicators.includes('ATR14')
             atrSeries.applyOptions({ visible: showATR })
           }
+
+          if (stochSeriesRef.current) {
+            const showSTOCH = resolvedActiveSubplot === 'STOCH' && selectedIndicators.includes('STOCH')
+            if (stochSeriesRef.current.stochK) stochSeriesRef.current.stochK.applyOptions({ visible: showSTOCH })
+            if (stochSeriesRef.current.stochD) stochSeriesRef.current.stochD.applyOptions({ visible: showSTOCH })
+          }
+
+          if (obvSeriesRef.current) {
+            const showOBV = resolvedActiveSubplot === 'OBV' && selectedIndicators.includes('OBV')
+            obvSeriesRef.current.applyOptions({ visible: showOBV })
+          }
         }, 0)
       } catch (error) {
         console.error('Chart reinitialization failed:', error)
@@ -694,7 +809,7 @@ export default function TradingViewChart({
 
   // 更新数据
   useEffect(() => {
-    const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+    const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
     const resolvedActiveSubplot = (activeSubplot && subplotIndicators.includes(activeSubplot))
       ? activeSubplot
       : subplotIndicators[0]
@@ -738,6 +853,22 @@ export default function TradingViewChart({
           value: value
         })).filter((item: any) => item.time && item.value > 0)
         ema50SeriesRef.current.setData(ema50Data)
+      }
+
+      if (indicatorData.EMA100 && ema100SeriesRef.current) {
+        const ema100Data = indicatorData.EMA100.map((value: number, index: number) => ({
+          time: chartData[index]?.time,
+          value: value
+        })).filter((item: any) => item.time && item.value > 0)
+        ema100SeriesRef.current.setData(ema100Data)
+      }
+
+      if (indicatorData.VWAP && vwapSeriesRef.current) {
+        const vwapData = indicatorData.VWAP.map((value: number, index: number) => ({
+          time: chartData[index]?.time,
+          value: value
+        })).filter((item: any) => item.time && !isNaN(item.value) && item.value !== null)
+        vwapSeriesRef.current.setData(vwapData)
       }
 
       // 渲染RSI指标 - 根据当前有效子图决定数据源
@@ -784,6 +915,34 @@ export default function TradingViewChart({
           value: value
         })).filter((item: any) => item.time && !isNaN(item.value))
         atrSeriesRef.current.setData(atrData)
+      }
+
+      // 渲染STOCH指标
+      if (indicatorData.STOCH && stochSeriesRef.current) {
+        const stochData = indicatorData.STOCH
+        if (stochData.k && stochSeriesRef.current.stochK) {
+          const kData = stochData.k.map((value: number, index: number) => ({
+            time: chartData[index]?.time,
+            value: value
+          })).filter((item: any) => item.time && !isNaN(item.value))
+          stochSeriesRef.current.stochK.setData(kData)
+        }
+        if (stochData.d && stochSeriesRef.current.stochD) {
+          const dData = stochData.d.map((value: number, index: number) => ({
+            time: chartData[index]?.time,
+            value: value
+          })).filter((item: any) => item.time && !isNaN(item.value))
+          stochSeriesRef.current.stochD.setData(dData)
+        }
+      }
+
+      // 渲染OBV指标
+      if (indicatorData.OBV && obvSeriesRef.current) {
+        const obvData = indicatorData.OBV.map((value: number, index: number) => ({
+          time: chartData[index]?.time,
+          value: value
+        })).filter((item: any) => item.time && !isNaN(item.value))
+        obvSeriesRef.current.setData(obvData)
       }
 
       // 渲染BOLL布林带
@@ -834,6 +993,12 @@ export default function TradingViewChart({
     if (ema50SeriesRef.current) {
       ema50SeriesRef.current.applyOptions({ visible: selectedIndicators.includes('EMA50') })
     }
+    if (ema100SeriesRef.current) {
+      ema100SeriesRef.current.applyOptions({ visible: selectedIndicators.includes('EMA100') })
+    }
+    if (vwapSeriesRef.current) {
+      vwapSeriesRef.current.applyOptions({ visible: selectedIndicators.includes('VWAP') })
+    }
 
     // BOLL布林带
     const showBoll = selectedIndicators.includes('BOLL')
@@ -862,20 +1027,30 @@ export default function TradingViewChart({
 
   // 控制子图指标显示/隐藏 - 纯UI操作，不重绘图表
   useEffect(() => {
-    const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+    const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
     const resolvedActiveSubplot = (activeSubplot && subplotIndicators.includes(activeSubplot))
       ? activeSubplot
       : subplotIndicators[0]
 
-    // 设置默认激活的子图
-    if (subplotIndicators.length > 0 && !activeSubplot) {
+    // 检测新增的子图指标
+    const prevSubplotIndicators = prevSubplotIndicatorsRef.current
+    const newlyAddedIndicators = subplotIndicators.filter(ind => !prevSubplotIndicators.includes(ind))
+
+    // 如果有新增的子图指标，自动切换到最新添加的指标
+    if (newlyAddedIndicators.length > 0) {
+      setActiveSubplot(newlyAddedIndicators[newlyAddedIndicators.length - 1])
+    }
+    // 设置默认激活的子图（仅在没有activeSubplot且有子图指标时）
+    else if (subplotIndicators.length > 0 && !activeSubplot) {
+      setActiveSubplot(subplotIndicators[0])
+    }
+    // 如果当前激活的子图不在选中列表中，切换到第一个可用的
+    else if (activeSubplot && !subplotIndicators.includes(activeSubplot) && subplotIndicators.length > 0) {
       setActiveSubplot(subplotIndicators[0])
     }
 
-    // 如果当前激活的子图不在选中列表中，切换到第一个可用的
-    if (activeSubplot && !subplotIndicators.includes(activeSubplot) && subplotIndicators.length > 0) {
-      setActiveSubplot(subplotIndicators[0])
-    }
+    // 更新上一次的子图指标列表
+    prevSubplotIndicatorsRef.current = subplotIndicators
 
     // 控制RSI显示
     if (rsiSeriesRef.current) {
@@ -901,6 +1076,23 @@ export default function TradingViewChart({
     if (atrSeriesRef.current) {
       const showATR = resolvedActiveSubplot === 'ATR14' && selectedIndicators.includes('ATR14')
       atrSeriesRef.current.applyOptions({ visible: showATR })
+    }
+
+    // 控制STOCH显示
+    if (stochSeriesRef.current) {
+      const showSTOCH = resolvedActiveSubplot === 'STOCH' && selectedIndicators.includes('STOCH')
+      if (stochSeriesRef.current.stochK) {
+        stochSeriesRef.current.stochK.applyOptions({ visible: showSTOCH })
+      }
+      if (stochSeriesRef.current.stochD) {
+        stochSeriesRef.current.stochD.applyOptions({ visible: showSTOCH })
+      }
+    }
+
+    // 控制OBV显示
+    if (obvSeriesRef.current) {
+      const showOBV = resolvedActiveSubplot === 'OBV' && selectedIndicators.includes('OBV')
+      obvSeriesRef.current.applyOptions({ visible: showOBV })
     }
 
     // 更新指标 pane 标签
@@ -978,6 +1170,8 @@ export default function TradingViewChart({
       if (ma20SeriesRef.current) ma20SeriesRef.current.setData([])
       if (ema20SeriesRef.current) ema20SeriesRef.current.setData([])
       if (ema50SeriesRef.current) ema50SeriesRef.current.setData([])
+      if (ema100SeriesRef.current) ema100SeriesRef.current.setData([])
+      if (vwapSeriesRef.current) vwapSeriesRef.current.setData([])
       if (bollUpperSeriesRef.current) bollUpperSeriesRef.current.setData([])
       if (bollMiddleSeriesRef.current) bollMiddleSeriesRef.current.setData([])
       if (bollLowerSeriesRef.current) bollLowerSeriesRef.current.setData([])
@@ -986,6 +1180,9 @@ export default function TradingViewChart({
       if (macdSeriesRef.current?.signalLine) macdSeriesRef.current.signalLine.setData([])
       if (macdSeriesRef.current?.histogram) macdSeriesRef.current.histogram.setData([])
       if (atrSeriesRef.current) atrSeriesRef.current.setData([])
+      if (stochSeriesRef.current?.stochK) stochSeriesRef.current.stochK.setData([])
+      if (stochSeriesRef.current?.stochD) stochSeriesRef.current.stochD.setData([])
+      if (obvSeriesRef.current) obvSeriesRef.current.setData([])
 
       // 强制请求所有选中指标
       fetchKlineData(true)
@@ -1014,7 +1211,7 @@ export default function TradingViewChart({
 
       {/* 指标子图切换器 */}
       {(() => {
-        const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14'].includes(ind))
+        const subplotIndicators = selectedIndicators.filter(ind => ['RSI14', 'RSI7', 'MACD', 'ATR14', 'STOCH', 'OBV'].includes(ind))
         if (subplotIndicators.length === 0) return null
 
         const currentActiveSubplot = activeSubplot || subplotIndicators[0]

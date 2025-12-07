@@ -36,6 +36,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const result = await getMembershipInfo()
       setMembership(result.membership)
+
+      // Sync membership info to local backend database
+      // This keeps the local UserSubscription table in sync with www.akooi.com
+      if (result.membership) {
+        try {
+          await fetch('/api/users/sync-membership', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              username: user.name,
+              status: result.membership.status,
+              current_period_end: result.membership.currentPeriodEnd,
+            }),
+          })
+          console.log('[AuthContext] Membership synced to local database')
+        } catch (syncError) {
+          // Don't fail if sync fails - membership is already loaded from www.akooi.com
+          console.warn('[AuthContext] Failed to sync membership to local database:', syncError)
+        }
+      }
     } catch (error) {
       console.error('Failed to refresh membership:', error)
       setMembership(null)

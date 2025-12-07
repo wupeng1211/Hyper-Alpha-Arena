@@ -165,6 +165,9 @@ export default function AIAnalysisPanel({
     setLoading(true)
     setResult(null)
 
+    // Record request start time for later retrieval if connection drops
+    const requestStartTime = new Date()
+
     try {
       const slicedKlines = klines.slice(-klineLimit)
 
@@ -268,6 +271,61 @@ export default function AIAnalysisPanel({
       } catch (fetchError: any) {
         clearTimeout(timeoutId)
         console.error('Analysis failed:', fetchError)
+
+        // If connection was closed but backend might have saved the result, try to retrieve it
+        if (fetchError instanceof TypeError && fetchError.message.includes('fetch')) {
+          console.log('Connection interrupted, attempting to retrieve saved result...')
+
+          try {
+            // Wait 2 seconds for backend to finish saving to database
+            await new Promise(resolve => setTimeout(resolve, 2000))
+
+            // Fetch recent analysis history for this symbol (get last 5 to be safe)
+            const historyResponse = await fetch(
+              `/api/klines/ai-analysis/history?symbol=${symbol}&limit=5`
+            )
+
+            if (historyResponse.ok) {
+              const historyData = await historyResponse.json()
+
+              // Find the analysis that matches this request by time range, symbol, and period
+              if (historyData.history && historyData.history.length > 0) {
+                const matchedAnalysis = historyData.history.find((item: any) => {
+                  const analysisTime = new Date(item.created_at)
+                  const timeDiffMs = analysisTime.getTime() - requestStartTime.getTime()
+
+                  // Check if analysis was created within 3 minutes after request started
+                  // and matches symbol + period
+                  return (
+                    timeDiffMs >= 0 &&
+                    timeDiffMs < 180000 && // 3 minutes
+                    item.symbol === symbol &&
+                    item.period === period
+                  )
+                })
+
+                if (matchedAnalysis) {
+                  // Found the result! Display it
+                  console.log('Successfully retrieved saved analysis result:', matchedAnalysis.id)
+                  setResult({
+                    success: true,
+                    analysis_id: matchedAnalysis.id,
+                    symbol: matchedAnalysis.symbol,
+                    period: matchedAnalysis.period,
+                    model: matchedAnalysis.model_used,
+                    analysis: matchedAnalysis.analysis,
+                    created_at: matchedAnalysis.created_at
+                  })
+                  return
+                }
+
+                console.log('No matching analysis found in history within expected time range')
+              }
+            }
+          } catch (retrieveError) {
+            console.error('Failed to retrieve saved result:', retrieveError)
+          }
+        }
 
         // Provide more specific error messages
         let errorMessage = 'Network error occurred'

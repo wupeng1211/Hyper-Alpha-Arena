@@ -33,7 +33,8 @@ import HyperliquidView from '@/components/hyperliquid/HyperliquidView'
 import PremiumFeaturesView from '@/components/premium/PremiumFeaturesView'
 import KlinesView from '@/components/klines/KlinesView'
 // Remove CallbackPage import - handle inline
-import { AIDecision, getAccounts } from '@/lib/api'
+import { AIDecision, getAccounts, checkMainnetAccounts, type UnauthorizedAccount } from '@/lib/api'
+import { AuthorizationModal } from '@/components/hyperliquid'
 import { ArenaDataProvider } from '@/contexts/ArenaDataContext'
 import { TradingModeProvider, useTradingMode } from '@/contexts/TradingModeContext'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
@@ -204,6 +205,35 @@ function App() {
   const wsRef = useRef<WebSocket | null>(null)
   const [accounts, setAccounts] = useState<any[]>([])
   const [accountsLoading, setAccountsLoading] = useState<boolean>(true)
+  const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [unauthorizedAccounts, setUnauthorizedAccounts] = useState<UnauthorizedAccount[]>([])
+  const authCheckedRef = useRef(false)
+
+  // Debug function to manually trigger authorization modal
+  // Uses negative IDs to avoid conflicts with real accounts
+  useEffect(() => {
+    (window as any).__debugShowAuthModal = (mockData?: UnauthorizedAccount[]) => {
+      const testAccounts = mockData || [{
+        account_id: -999,
+        account_name: 'Test Account (Debug)',
+        wallet_address: '0x0000000000000000000000000000000000000000',
+        max_fee: 0,
+        required_fee: 30
+      }]
+      // Force negative IDs to prevent affecting real accounts
+      const safeAccounts = testAccounts.map((acc, idx) => ({
+        ...acc,
+        account_id: acc.account_id > 0 ? -(idx + 900) : acc.account_id
+      }))
+      setUnauthorizedAccounts(safeAccounts)
+      setAuthModalOpen(true)
+      console.log('[Debug] Authorization modal opened with SAFE accounts (negative IDs):', safeAccounts)
+      console.warn('[Debug] Note: Positive account_ids are converted to negative to prevent affecting real accounts')
+    }
+    return () => {
+      delete (window as any).__debugShowAuthModal
+    }
+  }, [])
 
   useEffect(() => {
     tradingModeRef.current = tradingMode
@@ -410,11 +440,37 @@ function App() {
         setCurrentPage('trader-management')
         window.location.hash = 'trader-management'
       }
+
+      // Check builder fee authorization for mainnet accounts (once per session)
+      if (!authCheckedRef.current) {
+        authCheckedRef.current = true
+        try {
+          const result = await checkMainnetAccounts()
+          if (result.unauthorized_accounts && result.unauthorized_accounts.length > 0) {
+            setUnauthorizedAccounts(result.unauthorized_accounts)
+            setAuthModalOpen(true)
+          }
+        } catch (authError) {
+          console.error('Failed to check mainnet authorization:', authError)
+        }
+      }
     } catch (e) {
       console.error('Failed to fetch accounts', e)
     } finally {
       setAccountsLoading(false)
     }
+  }
+
+  const handleAuthorizationComplete = () => {
+    setAuthModalOpen(false)
+    setUnauthorizedAccounts([])
+    refreshAccounts()
+  }
+
+  const handleAuthModalClose = () => {
+    setAuthModalOpen(false)
+    setUnauthorizedAccounts([])
+    refreshAccounts()
   }
 
   // Fetch accounts on mount and when settings updated
@@ -592,7 +648,7 @@ function App() {
         )}
 
         {currentPage === 'premium-features' && (
-          <PremiumFeaturesView onAccountUpdated={handleAccountUpdated} />
+          <PremiumFeaturesView onAccountUpdated={handleAccountUpdated} onPageChange={setCurrentPage} />
         )}
       </main>
     )
@@ -601,21 +657,29 @@ function App() {
   const pageTitle = PAGE_TITLES[currentPage] ?? PAGE_TITLES.comprehensive
 
   return (
-    <div className="h-screen flex overflow-hidden">
-      <Sidebar
-        currentPage={currentPage}
-        onPageChange={setCurrentPage}
-        onAccountUpdated={handleAccountUpdated}
-      />
-      <div className="flex-1 flex flex-col min-w-0">
-        <Header
-          title={pageTitle}
-          currentAccount={account}
-          showAccountSelector={currentPage === 'comprehensive'}
+    <>
+      <div className="h-screen flex overflow-hidden">
+        <Sidebar
+          currentPage={currentPage}
+          onPageChange={setCurrentPage}
+          onAccountUpdated={handleAccountUpdated}
         />
-        {renderMainContent()}
+        <div className="flex-1 flex flex-col min-w-0">
+          <Header
+            title={pageTitle}
+            currentAccount={account}
+            showAccountSelector={currentPage === 'comprehensive'}
+          />
+          {renderMainContent()}
+        </div>
       </div>
-    </div>
+      <AuthorizationModal
+        isOpen={authModalOpen}
+        onClose={handleAuthModalClose}
+        unauthorizedAccounts={unauthorizedAccounts}
+        onAuthorizationComplete={handleAuthorizationComplete}
+      />
+    </>
   )
 }
 

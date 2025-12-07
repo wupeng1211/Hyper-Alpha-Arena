@@ -58,9 +58,16 @@ export default function HyperliquidAssetChart({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [logoPulseMap, setLogoPulseMap] = useState<Map<number, number>>(new Map())
+  const [timeRange, setTimeRange] = useState<'7d' | '15d' | '1m' | '3m' | 'all'>('7d')
+  const fetchingRef = useRef(false)
 
   // Fetch Hyperliquid asset curve data (5-minute bucketed)
   const fetchData = useCallback(async () => {
+    // Prevent duplicate requests
+    if (fetchingRef.current) {
+      return
+    }
+    fetchingRef.current = true
     try {
       setLoading(true)
       setError(null)
@@ -76,6 +83,28 @@ export default function HyperliquidAssetChart({
         params.set('account_id', String(selectedAccount))
       }
 
+      // Calculate time range based on selected option
+      const now = new Date()
+      if (timeRange !== 'all') {
+        const startDate = new Date(now)
+        switch (timeRange) {
+          case '7d':
+            startDate.setDate(now.getDate() - 7)
+            break
+          case '15d':
+            startDate.setDate(now.getDate() - 15)
+            break
+          case '1m':
+            startDate.setMonth(now.getMonth() - 1)
+            break
+          case '3m':
+            startDate.setMonth(now.getMonth() - 3)
+            break
+        }
+        params.set('start_date', startDate.toISOString())
+      }
+      params.set('end_date', now.toISOString())
+
       const response = await fetch(`/api/account/asset-curve?${params.toString()}`)
       if (!response.ok) {
         throw new Error('Failed to fetch asset curve data')
@@ -88,11 +117,17 @@ export default function HyperliquidAssetChart({
       setError(err instanceof Error ? err.message : 'Failed to load data')
     } finally {
       setLoading(false)
+      fetchingRef.current = false
     }
-  }, [environment, selectedAccount])
+  }, [environment, selectedAccount, timeRange])
 
   useEffect(() => {
-    fetchData()
+    // Debounce: wait 300ms before fetching to avoid rapid successive calls
+    const timeoutId = setTimeout(() => {
+      fetchData()
+    }, 300)
+
+    return () => clearTimeout(timeoutId)
   }, [fetchData, refreshTrigger])
 
   // Process chart data
@@ -273,6 +308,28 @@ export default function HyperliquidAssetChart({
   return (
     <Card className="h-full">
       <div className="h-full relative">
+        {/* Time Range Selector */}
+        <div className="absolute top-3 right-3 z-10 flex gap-1 bg-white/90 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-gray-200">
+          {[
+            { value: '7d' as const, label: '7D' },
+            { value: '15d' as const, label: '15D' },
+            { value: '1m' as const, label: '1M' },
+            { value: '3m' as const, label: '3M' },
+            { value: 'all' as const, label: 'ALL' },
+          ].map((option) => (
+            <button
+              key={option.value}
+              onClick={() => setTimeRange(option.value)}
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                timeRange === option.value
+                  ? 'bg-blue-500 text-white shadow-sm'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
             data={chartData}

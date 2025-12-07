@@ -104,6 +104,8 @@ def get_all_asset_curves_data_new(
     environment: Optional[str] = None,
     wallet_address: Optional[str] = None,
     account_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> List[Dict]:
     """
     Build asset curve data for all active accounts (or specific account) using cached SQL aggregation.
@@ -122,6 +124,8 @@ def get_all_asset_curves_data_new(
             environment=effective_environment,
             wallet_address=wallet_address,
             account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     # For other non-paper modes, return empty data for now
@@ -202,6 +206,8 @@ def _build_hyperliquid_asset_curve(
     environment: Optional[str] = None,
     wallet_address: Optional[str] = None,
     account_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> List[Dict]:
     """Build asset curve for Hyperliquid accounts with 5-minute bucketing"""
     bucket_seconds = bucket_minutes * 60
@@ -249,6 +255,20 @@ def _build_hyperliquid_asset_curve(
         if account_id:
             bucket_query = bucket_query.filter(HyperliquidAccountSnapshot.account_id == account_id)
 
+        # Apply time range filters
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                bucket_query = bucket_query.filter(HyperliquidAccountSnapshot.created_at >= start_dt)
+            except (ValueError, AttributeError):
+                logger.warning(f"Invalid start_date format: {start_date}")
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                bucket_query = bucket_query.filter(HyperliquidAccountSnapshot.created_at <= end_dt)
+            except (ValueError, AttributeError):
+                logger.warning(f"Invalid end_date format: {end_date}")
+
         bucket_subquery = bucket_query.group_by(
             HyperliquidAccountSnapshot.account_id,
             bucket_index_expr,
@@ -272,6 +292,20 @@ def _build_hyperliquid_asset_curve(
             rows_query = rows_query.filter(snapshot_alias.wallet_address == wallet_address)
         if account_id:
             rows_query = rows_query.filter(snapshot_alias.account_id == account_id)
+
+        # Apply time range filters to rows query as well
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                rows_query = rows_query.filter(snapshot_alias.created_at >= start_dt)
+            except (ValueError, AttributeError):
+                pass
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                rows_query = rows_query.filter(snapshot_alias.created_at <= end_dt)
+            except (ValueError, AttributeError):
+                pass
 
         rows = rows_query.order_by(
             snapshot_alias.created_at.asc(),

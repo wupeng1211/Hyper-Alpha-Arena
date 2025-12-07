@@ -11,7 +11,7 @@ from decimal import Decimal
 import logging
 
 from database.connection import SessionLocal
-from database.models import Account, Position, Trade, CryptoPrice, AccountAssetSnapshot
+from database.models import Account, Position, Trade, CryptoPrice, AccountAssetSnapshot, HyperliquidWallet
 from services.asset_curve_calculator import invalidate_asset_curve_cache
 from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message
 from schemas.account import StrategyConfig, StrategyConfigUpdate
@@ -70,6 +70,9 @@ async def list_all_accounts(db: Session = Depends(get_db)):
     """Get all active accounts (for paper trading demo)"""
     try:
         from database.models import User
+        from eth_account import Account as EthAccount
+        from services.hyperliquid_environment import decrypt_private_key
+
         accounts = db.query(Account).filter(Account.is_active == "true").all()
 
         result = []
@@ -107,6 +110,48 @@ async def list_all_accounts(db: Session = Depends(get_db)):
                     )
                     # Keep database values on error
 
+            # Derive wallet_address for mainnet accounts
+            # Check both old architecture (accounts table) and new architecture (hyperliquid_wallets table)
+            wallet_address = None
+            has_mainnet_wallet = False
+
+            # First check new multi-wallet architecture (hyperliquid_wallets table)
+            mainnet_wallet = db.query(HyperliquidWallet).filter(
+                HyperliquidWallet.account_id == account.id,
+                HyperliquidWallet.environment == "mainnet"
+            ).first()
+
+            if mainnet_wallet and mainnet_wallet.private_key_encrypted:
+                has_mainnet_wallet = True
+                try:
+                    decrypted_key = decrypt_private_key(mainnet_wallet.private_key_encrypted)
+                    if decrypted_key:
+                        if not decrypted_key.startswith('0x'):
+                            decrypted_key = '0x' + decrypted_key
+                        eth_account = EthAccount.from_key(decrypted_key)
+                        wallet_address = eth_account.address.lower()
+                except Exception as wallet_err:
+                    logger.warning(
+                        f"Failed to derive wallet address from wallets table for account {account.id}: {wallet_err}"
+                    )
+
+            # Fallback to old architecture (accounts table field)
+            if not has_mainnet_wallet:
+                mainnet_private_key = getattr(account, "hyperliquid_mainnet_private_key", None)
+                if mainnet_private_key:
+                    has_mainnet_wallet = True
+                    try:
+                        decrypted_key = decrypt_private_key(mainnet_private_key)
+                        if decrypted_key:
+                            if not decrypted_key.startswith('0x'):
+                                decrypted_key = '0x' + decrypted_key
+                            eth_account = EthAccount.from_key(decrypted_key)
+                            wallet_address = eth_account.address.lower()
+                    except Exception as wallet_err:
+                        logger.warning(
+                            f"Failed to derive wallet address for account {account.id}: {wallet_err}"
+                        )
+
             result.append({
                 "id": account.id,
                 "user_id": account.user_id,
@@ -120,7 +165,9 @@ async def list_all_accounts(db: Session = Depends(get_db)):
                 "base_url": account.base_url,
                 "api_key": account.api_key,
                 "is_active": account.is_active == "true",
-                "auto_trading_enabled": account.auto_trading_enabled == "true"
+                "auto_trading_enabled": account.auto_trading_enabled == "true",
+                "wallet_address": wallet_address,
+                "has_mainnet_wallet": has_mainnet_wallet
             })
 
         return result
@@ -495,6 +542,8 @@ async def get_asset_curve(
     environment: Optional[str] = None,
     wallet_address: Optional[str] = None,
     account_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """Get asset curve data for all accounts (or specific account) with specified timeframe and trading mode"""
@@ -507,6 +556,8 @@ async def get_asset_curve(
             environment=environment,
             wallet_address=wallet_address,
             account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
         )
         return data
     except Exception as e:
@@ -1017,4 +1068,391 @@ async def trigger_ai_trade(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to trigger AI trade: {str(e)}"
+        )
+
+
+@router.get("/hyperliquid/check-builder-authorization")
+async def check_builder_authorization(
+    wallet_address: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Check if a wallet address has authorized the platform's builder fee.
+
+    Args:
+        wallet_address: The Hyperliquid wallet address to check
+
+    Returns:
+        {
+            "authorized": bool,  # True if authorized with sufficient fee
+            "max_fee": int,      # Maximum fee approved (in tenths of basis point)
+            "required_fee": int  # Required fee by platform (in tenths of basis point)
+        }
+    """
+    try:
+        import requests
+        from config.settings import HYPERLIQUID_BUILDER_CONFIG
+
+        # Query Hyperliquid API for max builder fee
+        response = requests.post(
+            "https://api.hyperliquid.xyz/info",
+            json={
+                "type": "maxBuilderFee",
+                "user": wallet_address,
+                "builder": HYPERLIQUID_BUILDER_CONFIG.builder_address
+            },
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"Failed to check builder authorization: HTTP {response.status_code}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to query Hyperliquid authorization status"
+            )
+
+        max_fee = response.json()  # Returns integer (e.g., 30 for 0.03%)
+        required_fee = HYPERLIQUID_BUILDER_CONFIG.builder_fee
+
+        return {
+            "authorized": max_fee >= required_fee,
+            "max_fee": max_fee,
+            "required_fee": required_fee,
+            "builder_address": HYPERLIQUID_BUILDER_CONFIG.builder_address
+        }
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error checking builder authorization: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Network error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error checking builder authorization: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check authorization: {str(e)}"
+        )
+
+
+@router.post("/hyperliquid/approve-builder")
+async def approve_builder_fee(
+    account_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger builder fee approval for a Hyperliquid account.
+
+    This endpoint initiates the approval process where the user's wallet
+    will be prompted to sign a transaction approving the platform's builder fee.
+
+    Args:
+        account_id: The account ID to approve builder fee for
+
+    Returns:
+        {
+            "success": bool,
+            "message": str,
+            "builder_address": str,
+            "approved_fee": str  # e.g., "0.03%"
+        }
+    """
+    try:
+        from config.settings import HYPERLIQUID_BUILDER_CONFIG
+        from services.hyperliquid_environment import get_hyperliquid_client
+
+        # Get account
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+
+        # Check if account has mainnet wallet configured (new architecture first, then fallback)
+        mainnet_wallet = db.query(HyperliquidWallet).filter(
+            HyperliquidWallet.account_id == account_id,
+            HyperliquidWallet.environment == "mainnet",
+            HyperliquidWallet.private_key_encrypted.isnot(None)
+        ).first()
+
+        # Fallback to old architecture
+        if not mainnet_wallet:
+            mainnet_key = getattr(account, "hyperliquid_mainnet_private_key", None)
+            if not mainnet_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Account does not have a mainnet wallet configured"
+                )
+
+        # Get Hyperliquid client with mainnet environment (regardless of current trading mode)
+        client = get_hyperliquid_client(db, account_id, override_environment="mainnet")
+
+        # Calculate fee percentage for display (e.g., 30 -> "0.03%")
+        fee_bps = HYPERLIQUID_BUILDER_CONFIG.builder_fee / 10  # Convert to basis points
+        fee_percentage = f"{fee_bps / 100}%"  # Convert to percentage string
+
+        # Call approve_builder_fee on the exchange
+        # This will trigger wallet signature request
+        result = client.sdk_exchange.approve_builder_fee(
+            HYPERLIQUID_BUILDER_CONFIG.builder_address,
+            fee_percentage
+        )
+
+        logger.info(
+            f"Builder fee approval initiated for account {account_id}: "
+            f"builder={HYPERLIQUID_BUILDER_CONFIG.builder_address}, "
+            f"fee={fee_percentage}, result={result}"
+        )
+
+        return {
+            "success": True,
+            "message": f"Builder fee approval initiated. Please confirm in your wallet.",
+            "builder_address": HYPERLIQUID_BUILDER_CONFIG.builder_address,
+            "approved_fee": fee_percentage,
+            "result": result
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to approve builder fee for account {account_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to approve builder fee: {str(e)}"
+        )
+
+
+@router.get("/hyperliquid/check-mainnet-accounts")
+async def check_mainnet_accounts(
+    db: Session = Depends(get_db)
+):
+    """
+    Check builder fee authorization for all active mainnet trading accounts.
+
+    This endpoint is called on system startup to identify accounts that have:
+    - auto_trading_enabled = true
+    - hyperliquid_mainnet_private_key configured
+    - but builder fee NOT authorized
+
+    Returns:
+        {
+            "unauthorized_accounts": [
+                {
+                    "account_id": int,
+                    "account_name": str,
+                    "wallet_address": str,
+                    "max_fee": int,  # Current authorized fee in tenths of basis point
+                    "required_fee": int  # Required fee (30 for 0.03%)
+                }
+            ]
+        }
+    """
+    try:
+        import requests
+        from config.settings import HYPERLIQUID_BUILDER_CONFIG
+        from eth_account import Account as EthAccount
+        from services.hyperliquid_environment import decrypt_private_key
+
+        unauthorized_accounts = []
+        checked_account_ids = set()
+
+        # === Check new multi-wallet architecture (hyperliquid_wallets table) ===
+        # Query accounts with mainnet wallet in hyperliquid_wallets table and trading enabled
+        mainnet_wallets = db.query(HyperliquidWallet, Account).join(
+            Account, HyperliquidWallet.account_id == Account.id
+        ).filter(
+            HyperliquidWallet.environment == "mainnet",
+            HyperliquidWallet.private_key_encrypted.isnot(None),
+            Account.auto_trading_enabled == "true"
+        ).all()
+
+        logger.info(f"Found {len(mainnet_wallets)} accounts with mainnet wallet in wallets table")
+
+        for wallet, account in mainnet_wallets:
+            checked_account_ids.add(account.id)
+            try:
+                decrypted_key = decrypt_private_key(wallet.private_key_encrypted)
+                if not decrypted_key:
+                    logger.warning(f"Failed to decrypt mainnet key for account {account.id} from wallets table")
+                    continue
+
+                if not decrypted_key.startswith('0x'):
+                    decrypted_key = '0x' + decrypted_key
+
+                eth_account = EthAccount.from_key(decrypted_key)
+                wallet_address = eth_account.address.lower()
+
+                response = requests.post(
+                    "https://api.hyperliquid.xyz/info",
+                    json={
+                        "type": "maxBuilderFee",
+                        "user": wallet_address,
+                        "builder": HYPERLIQUID_BUILDER_CONFIG.builder_address
+                    },
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    max_fee = response.json()
+                    required_fee = HYPERLIQUID_BUILDER_CONFIG.builder_fee
+
+                    if max_fee < required_fee:
+                        unauthorized_accounts.append({
+                            "account_id": account.id,
+                            "account_name": account.name,
+                            "wallet_address": wallet_address,
+                            "max_fee": max_fee,
+                            "required_fee": required_fee
+                        })
+                        logger.info(
+                            f"Account {account.id} ({account.name}) unauthorized: "
+                            f"max_fee={max_fee}, required={required_fee}"
+                        )
+                else:
+                    logger.error(
+                        f"Failed to check authorization for account {account.id}: "
+                        f"HTTP {response.status_code}"
+                    )
+            except Exception as account_err:
+                logger.error(
+                    f"Error checking account {account.id} from wallets table: {account_err}",
+                    exc_info=True
+                )
+                continue
+
+        # === Fallback: Check old architecture (accounts table field) ===
+        # Query accounts with mainnet key in accounts table (not already checked)
+        old_accounts = db.query(Account).filter(
+            Account.auto_trading_enabled == "true",
+            Account.hyperliquid_mainnet_private_key.isnot(None),
+            Account.hyperliquid_mainnet_private_key != ""
+        ).all()
+
+        # Filter out accounts already checked via wallets table
+        old_accounts = [a for a in old_accounts if a.id not in checked_account_ids]
+
+        logger.info(f"Found {len(old_accounts)} additional accounts with mainnet key in accounts table")
+
+        for account in old_accounts:
+            try:
+                decrypted_key = decrypt_private_key(account.hyperliquid_mainnet_private_key)
+                if not decrypted_key:
+                    logger.warning(f"Failed to decrypt mainnet key for account {account.id}")
+                    continue
+
+                if not decrypted_key.startswith('0x'):
+                    decrypted_key = '0x' + decrypted_key
+
+                eth_account = EthAccount.from_key(decrypted_key)
+                wallet_address = eth_account.address.lower()
+
+                response = requests.post(
+                    "https://api.hyperliquid.xyz/info",
+                    json={
+                        "type": "maxBuilderFee",
+                        "user": wallet_address,
+                        "builder": HYPERLIQUID_BUILDER_CONFIG.builder_address
+                    },
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    max_fee = response.json()
+                    required_fee = HYPERLIQUID_BUILDER_CONFIG.builder_fee
+
+                    if max_fee < required_fee:
+                        unauthorized_accounts.append({
+                            "account_id": account.id,
+                            "account_name": account.name,
+                            "wallet_address": wallet_address,
+                            "max_fee": max_fee,
+                            "required_fee": required_fee
+                        })
+                        logger.info(
+                            f"Account {account.id} ({account.name}) unauthorized: "
+                            f"max_fee={max_fee}, required={required_fee}"
+                        )
+                else:
+                    logger.error(
+                        f"Failed to check authorization for account {account.id}: "
+                        f"HTTP {response.status_code}"
+                    )
+            except Exception as account_err:
+                logger.error(
+                    f"Error checking account {account.id}: {account_err}",
+                    exc_info=True
+                )
+                continue
+
+        total_checked = len(mainnet_wallets) + len(old_accounts)
+        logger.info(
+            f"Builder fee check complete: {len(unauthorized_accounts)} "
+            f"unauthorized out of {total_checked} total"
+        )
+
+        return {
+            "unauthorized_accounts": unauthorized_accounts
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to check mainnet accounts: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check mainnet accounts: {str(e)}"
+        )
+
+
+@router.post("/{account_id}/disable-trading")
+async def disable_trading(
+    account_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Disable auto trading for an account.
+
+    This endpoint is called when a user refuses to authorize builder fee,
+    ensuring that the account cannot place orders without proper authorization.
+
+    Args:
+        account_id: The account ID to disable trading for
+
+    Returns:
+        {
+            "success": bool,
+            "message": str,
+            "account_id": int,
+            "account_name": str
+        }
+    """
+    try:
+        # Get account
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account {account_id} not found"
+            )
+
+        # Disable auto trading
+        account.auto_trading_enabled = "false"
+        db.commit()
+
+        logger.info(
+            f"Auto trading disabled for account {account_id} ({account.name}) "
+            f"due to builder fee authorization refusal"
+        )
+
+        return {
+            "success": True,
+            "message": f"Auto trading disabled for {account.name}",
+            "account_id": account_id,
+            "account_name": account.name
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to disable trading for account {account_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to disable trading: {str(e)}"
         )

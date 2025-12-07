@@ -2,6 +2,8 @@
 K-line AI Analysis API Routes
 """
 import asyncio
+import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +16,7 @@ from services.kline_ai_analysis_service import analyze_kline_chart, get_analysis
 
 
 router = APIRouter(prefix="/api/klines", tags=["kline-analysis"])
+logger = logging.getLogger(__name__)
 
 
 def get_db():
@@ -85,56 +88,90 @@ async def create_ai_analysis(
     - **market_data**: Current market data
     - **user_message**: Optional custom question from user
     """
-    # Get the AI Trader account
-    account = db.query(Account).filter(Account.id == request.account_id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="AI Trader not found")
+    start_time = time.time()
+    request_id = f"{request.symbol}_{request.period}_{int(start_time)}"
 
-    if account.account_type != "AI":
-        raise HTTPException(status_code=400, detail="Selected account is not an AI Trader")
+    logger.info(f"[AI Analysis {request_id}] Request received: symbol={request.symbol}, period={request.period}, "
+                f"account_id={request.account_id}, kline_count={len(request.klines)}, "
+                f"user_message={'Yes' if request.user_message else 'No'}")
 
-    # Get user (default user for now)
-    user = db.query(User).filter(User.username == "default").first()
-    user_id = user.id if user else 1
+    try:
+        # Get the AI Trader account
+        account = db.query(Account).filter(Account.id == request.account_id).first()
+        if not account:
+            logger.error(f"[AI Analysis {request_id}] AI Trader not found: account_id={request.account_id}")
+            raise HTTPException(status_code=404, detail="AI Trader not found")
 
-    # Convert request data to dictionaries
-    klines_data = [k.model_dump() for k in request.klines]
-    market_data = request.market_data.model_dump()
+        if account.account_type != "AI":
+            logger.error(f"[AI Analysis {request_id}] Account is not AI type: account_id={request.account_id}, type={account.account_type}")
+            raise HTTPException(status_code=400, detail="Selected account is not an AI Trader")
 
-    # Perform analysis in thread pool to avoid blocking event loop
-    # analyze_kline_chart uses synchronous requests.post() which would block
-    result = await asyncio.to_thread(
-        analyze_kline_chart,
-        db=db,
-        account=account,
-        symbol=request.symbol,
-        period=request.period,
-        klines=klines_data,
-        indicators=request.indicators,
-        market_data=market_data,
-        user_message=request.user_message,
-        positions=request.positions or [],
-        kline_limit=request.kline_limit,
-        user_id=user_id,
-    )
+        logger.info(f"[AI Analysis {request_id}] Using AI Trader: name={account.name}, model={account.model}")
 
-    if result and result.get("success"):
-        return AIAnalysisResponse(
-            success=True,
-            analysis_id=result.get("analysis_id"),
-            symbol=result.get("symbol"),
-            period=result.get("period"),
-            model=result.get("model"),
-            trader_name=result.get("trader_name"),
-            analysis=result.get("analysis"),
-            created_at=result.get("created_at"),
-            prompt=result.get("prompt"),
+        # Get user (default user for now)
+        user = db.query(User).filter(User.username == "default").first()
+        user_id = user.id if user else 1
+
+        # Convert request data to dictionaries
+        klines_data = [k.model_dump() for k in request.klines]
+        market_data = request.market_data.model_dump()
+
+        logger.info(f"[AI Analysis {request_id}] Starting analysis in thread pool...")
+        thread_start = time.time()
+
+        # Perform analysis in thread pool to avoid blocking event loop
+        # analyze_kline_chart uses synchronous requests.post() which would block
+        result = await asyncio.to_thread(
+            analyze_kline_chart,
+            db=db,
+            account=account,
+            symbol=request.symbol,
+            period=request.period,
+            klines=klines_data,
+            indicators=request.indicators,
+            market_data=market_data,
+            user_message=request.user_message,
+            positions=request.positions or [],
+            kline_limit=request.kline_limit,
+            user_id=user_id,
         )
-    else:
-        error_msg = result.get("error", "Unknown error") if result else "Analysis failed"
+
+        thread_elapsed = time.time() - thread_start
+        total_elapsed = time.time() - start_time
+
+        logger.info(f"[AI Analysis {request_id}] Analysis completed: thread_time={thread_elapsed:.2f}s, "
+                   f"total_time={total_elapsed:.2f}s, success={result.get('success') if result else False}")
+
+        if result and result.get("success"):
+            return AIAnalysisResponse(
+                success=True,
+                analysis_id=result.get("analysis_id"),
+                symbol=result.get("symbol"),
+                period=result.get("period"),
+                model=result.get("model"),
+                trader_name=result.get("trader_name"),
+                analysis=result.get("analysis"),
+                created_at=result.get("created_at"),
+                prompt=result.get("prompt"),
+            )
+        else:
+            error_msg = result.get("error", "Unknown error") if result else "Analysis failed"
+            logger.error(f"[AI Analysis {request_id}] Analysis failed: error={error_msg}")
+            return AIAnalysisResponse(
+                success=False,
+                error=error_msg,
+            )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        elapsed = time.time() - start_time
+        logger.error(f"[AI Analysis {request_id}] Unexpected error after {elapsed:.2f}s: {type(e).__name__}: {str(e)}",
+                    exc_info=True)
         return AIAnalysisResponse(
             success=False,
-            error=error_msg,
+            error=f"Internal server error: {type(e).__name__}"
         )
 
 

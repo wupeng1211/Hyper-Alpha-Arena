@@ -51,11 +51,11 @@ def _format_klines_summary(klines: List[Dict]) -> str:
         else:
             time_str = 'N/A'
 
-        open_price = kline.get('open', 0)
-        high = kline.get('high', 0)
-        low = kline.get('low', 0)
-        close = kline.get('close', 0)
-        volume = kline.get('volume', 0)
+        open_price = kline.get('open') or 0
+        high = kline.get('high') or 0
+        low = kline.get('low') or 0
+        close = kline.get('close') or 0
+        volume = kline.get('volume') or 0
 
         # Determine candle direction
         direction = "+" if close >= open_price else "-"
@@ -68,11 +68,11 @@ def _format_klines_summary(klines: List[Dict]) -> str:
 
     # Add summary statistics
     if len(klines) >= 2:
-        first_close = klines[0].get('close', 0)
-        last_close = klines[-1].get('close', 0)
-        highest = max(k.get('high', 0) for k in klines)
-        lowest = min(k.get('low', float('inf')) for k in klines)
-        total_volume = sum(k.get('volume', 0) for k in klines)
+        first_close = klines[0].get('close') or 0
+        last_close = klines[-1].get('close') or 0
+        highest = max((k.get('high') or 0) for k in klines)
+        lowest = min((k.get('low') or float('inf')) for k in klines)
+        total_volume = sum((k.get('volume') or 0) for k in klines)
 
         if first_close > 0:
             period_change = ((last_close - first_close) / first_close) * 100
@@ -245,12 +245,18 @@ def analyze_kline_chart(
     Returns:
         Dictionary with analysis result or None if failed
     """
+    analysis_start = time.time()
+    logger.info(f"[K-line Analysis] Starting analysis: symbol={symbol}, period={period}, "
+               f"account={account.name}, model={account.model}, klines={len(klines)}, "
+               f"user_message={'Yes' if user_message else 'No'}")
+
     if not account.api_key or account.api_key in ["", "default-key-please-update-in-settings", "default"]:
-        logger.warning(f"Account {account.name} has no valid API key for K-line analysis")
+        logger.info(f"[K-line Analysis] Account {account.name} has no valid API key")
         return {"error": "AI Trader has no valid API key configured"}
 
     try:
         # Build prompt context
+        logger.info(f"[K-line Analysis] Building prompt context...")
         now = datetime.utcnow()
 
         # respect kline_limit if provided
@@ -333,9 +339,17 @@ def analyze_kline_chart(
         success = False
         request_timeout = 600  # 10 minutes for all models (reasoning models can be very slow)
 
-        for endpoint in endpoints:
+        logger.info(f"[K-line AI API] Starting AI API call: model={account.model}, timeout={request_timeout}s, "
+                   f"endpoints={len(endpoints)}, max_retries={max_retries}")
+
+        for endpoint_idx, endpoint in enumerate(endpoints):
+            logger.info(f"[K-line AI API] Trying endpoint {endpoint_idx + 1}/{len(endpoints)}: {endpoint}")
+
             for attempt in range(max_retries):
                 try:
+                    api_start = time.time()
+                    logger.info(f"[K-line AI API] Sending request (attempt {attempt + 1}/{max_retries})...")
+
                     response = requests.post(
                         endpoint,
                         headers=headers,
@@ -344,34 +358,52 @@ def analyze_kline_chart(
                         verify=False,
                     )
 
+                    api_elapsed = time.time() - api_start
+                    logger.info(f"[K-line AI API] Received response in {api_elapsed:.2f}s: status={response.status_code}, "
+                               f"content_length={len(response.content) if response.content else 0}")
+
                     if response.status_code == 200:
                         success = True
+                        logger.info(f"[K-line AI API] Success! Total API time: {api_elapsed:.2f}s")
                         break
 
                     if response.status_code == 429:
                         wait_time = (2**attempt) + random.uniform(0, 1)
-                        logger.warning(f"Rate limited, waiting {wait_time:.1f}s...")
+                        logger.info(f"[K-line AI API] Rate limited (429), waiting {wait_time:.1f}s...")
                         if attempt < max_retries - 1:
                             time.sleep(wait_time)
                             continue
 
-                    logger.warning(f"API returned status {response.status_code}: {response.text}")
+                    logger.info(f"[K-line AI API] API returned error status {response.status_code}: {response.text[:200]}")
+                    break
+
+                except requests.Timeout as e:
+                    api_elapsed = time.time() - api_start
+                    logger.error(f"[K-line AI API] Request timeout after {api_elapsed:.2f}s (configured: {request_timeout}s): {e}")
+                    if attempt < max_retries - 1:
+                        wait_time = (2**attempt) + random.uniform(0, 1)
+                        logger.info(f"[K-line AI API] Retrying in {wait_time:.1f}s...")
+                        time.sleep(wait_time)
+                        continue
+                    logger.error(f"[K-line AI API] Timeout after {max_retries} attempts")
                     break
 
                 except requests.RequestException as e:
+                    api_elapsed = time.time() - api_start
+                    logger.error(f"[K-line AI API] Request failed after {api_elapsed:.2f}s: {type(e).__name__}: {e}")
                     if attempt < max_retries - 1:
                         wait_time = (2**attempt) + random.uniform(0, 1)
-                        logger.warning(f"Request failed, retrying in {wait_time:.1f}s: {e}")
+                        logger.info(f"[K-line AI API] Retrying in {wait_time:.1f}s...")
                         time.sleep(wait_time)
                         continue
-                    logger.warning(f"Request failed after {max_retries} attempts: {e}")
+                    logger.error(f"[K-line AI API] Failed after {max_retries} attempts")
                     break
 
             if success:
                 break
 
         if not success or not response:
-            logger.error(f"All API endpoints failed for account {account.name}")
+            logger.error(f"[K-line AI API] All API endpoints failed for account {account.name}")
             return {"error": "AI API request failed"}
 
         # Parse response
@@ -404,7 +436,9 @@ def analyze_kline_chart(
             db.commit()
             db.refresh(analysis_log)
 
-            logger.info(f"K-line analysis completed for {symbol}/{period} using {account.name}")
+            total_elapsed = time.time() - analysis_start
+            logger.info(f"[K-line Analysis] Analysis completed successfully in {total_elapsed:.2f}s: "
+                       f"symbol={symbol}, period={period}, account={account.name}, analysis_id={analysis_log.id}")
 
             return {
                 "success": True,
@@ -418,11 +452,12 @@ def analyze_kline_chart(
                 "prompt": prompt,
             }
 
-        logger.error(f"Unexpected AI response format: {result}")
+        logger.error(f"[K-line Analysis] Unexpected AI response format: {result}")
         return {"error": "Unexpected AI response format"}
 
     except Exception as e:
-        logger.error(f"K-line analysis failed: {e}", exc_info=True)
+        elapsed = time.time() - analysis_start
+        logger.error(f"[K-line Analysis] Analysis failed after {elapsed:.2f}s: {type(e).__name__}: {e}", exc_info=True)
         return {"error": f"Analysis failed: {str(e)}"}
 
 

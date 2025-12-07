@@ -15,11 +15,14 @@ import {
   createAccount as createAccount,
   updateAccount as updateAccount,
   testLLMConnection,
+  checkBuilderAuthorization,
   type TradingAccount,
   type TradingAccountCreate,
-  type TradingAccountUpdate
+  type TradingAccountUpdate,
+  type UnauthorizedAccount
 } from '@/lib/api'
 import WalletConfigPanel from '@/components/trader/WalletConfigPanel'
+import { AuthorizationModal } from '@/components/hyperliquid'
 
 interface SettingsDialogProps {
   open: boolean
@@ -49,6 +52,8 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
   const [error, setError] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
+  const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [unauthorizedAccounts, setUnauthorizedAccounts] = useState<UnauthorizedAccount[]>([])
   const [newAccount, setNewAccount] = useState<AIAccountCreate>({
     name: '',
     model: '',
@@ -243,6 +248,25 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
   const handleToggleAutoTrading = async (account: AIAccount, nextValue: boolean) => {
     try {
       setToggleLoadingId(account.id)
+
+      // If enabling trading and account has mainnet wallet, check authorization first
+      if (nextValue && account.has_mainnet_wallet && account.wallet_address) {
+        const authStatus = await checkBuilderAuthorization(account.wallet_address)
+        if (!authStatus.authorized) {
+          // Show authorization modal
+          setUnauthorizedAccounts([{
+            account_id: account.id,
+            account_name: account.name,
+            wallet_address: account.wallet_address,
+            max_fee: authStatus.max_fee,
+            required_fee: authStatus.required_fee
+          }])
+          setAuthModalOpen(true)
+          setToggleLoadingId(null)
+          return
+        }
+      }
+
       await updateAccount(account.id, { auto_trading_enabled: nextValue })
       setAccounts((prev) =>
         prev.map((acc) => (acc.id === account.id ? { ...acc, auto_trading_enabled: nextValue } : acc))
@@ -256,6 +280,30 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
     } finally {
       setToggleLoadingId(null)
     }
+  }
+
+  const handleAuthorizationComplete = async () => {
+    setAuthModalOpen(false)
+    // After authorization complete, enable trading for the authorized accounts
+    for (const account of unauthorizedAccounts) {
+      try {
+        await updateAccount(account.account_id, { auto_trading_enabled: true })
+        setAccounts((prev) =>
+          prev.map((acc) => (acc.id === account.account_id ? { ...acc, auto_trading_enabled: true } : acc))
+        )
+        toast.success(`Auto trading enabled for ${account.account_name}`)
+      } catch (error) {
+        console.error(`Failed to enable trading for ${account.account_name}:`, error)
+      }
+    }
+    setUnauthorizedAccounts([])
+    onAccountUpdated?.()
+  }
+
+  const handleAuthModalClose = () => {
+    setAuthModalOpen(false)
+    setUnauthorizedAccounts([])
+    loadAccounts() // Reload to get updated trading status
   }
 
   const content = (
@@ -461,15 +509,33 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
   )
 
   if (embedded) {
-    return content
+    return (
+      <>
+        {content}
+        <AuthorizationModal
+          isOpen={authModalOpen}
+          onClose={handleAuthModalClose}
+          unauthorizedAccounts={unauthorizedAccounts}
+          onAuthorizationComplete={handleAuthorizationComplete}
+        />
+      </>
+    )
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px]">
-        {content}
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-[600px]">
+          {content}
+        </DialogContent>
+      </Dialog>
+      <AuthorizationModal
+        isOpen={authModalOpen}
+        onClose={handleAuthModalClose}
+        unauthorizedAccounts={unauthorizedAccounts}
+        onAuthorizationComplete={handleAuthorizationComplete}
+      />
+    </>
   )
 }
 

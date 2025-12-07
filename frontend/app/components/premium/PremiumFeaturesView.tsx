@@ -11,7 +11,8 @@ import {
   Target,
   Lock,
   ExternalLink,
-  Info
+  Info,
+  Sparkles
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { useAuth } from '@/contexts/AuthContext'
@@ -19,9 +20,10 @@ import PremiumRequiredModal from '@/components/ui/PremiumRequiredModal'
 
 interface PremiumFeaturesViewProps {
   onAccountUpdated?: () => void
+  onPageChange?: (page: string) => void
 }
 
-export default function PremiumFeaturesView({ onAccountUpdated }: PremiumFeaturesViewProps) {
+export default function PremiumFeaturesView({ onAccountUpdated, onPageChange }: PremiumFeaturesViewProps) {
   const { user, membership, membershipLoading } = useAuth()
 
   const [isLoading, setIsLoading] = useState(true)
@@ -29,16 +31,16 @@ export default function PremiumFeaturesView({ onAccountUpdated }: PremiumFeature
   const [samplingDepth, setSamplingDepth] = useState(10)
   const [showPremiumModal, setShowPremiumModal] = useState(false)
   const [samplingInterval, setSamplingInterval] = useState(18)
-  const [advancedIndicators, setAdvancedIndicators] = useState({
-    momentum: false,
-    rsi: false,
-    macd: false,
-    bollinger: false
-  })
-  const [multiTimeframe, setMultiTimeframe] = useState({
-    enabled: false,
-    timeframes: [] as string[]
-  })
+
+  // All supported technical indicators
+  const technicalIndicators = [
+    { name: 'MA5/10/20', description: 'Simple Moving Averages for trend identification', category: 'Trend' },
+    { name: 'EMA20/50/100', description: 'Exponential Moving Averages for responsive trend tracking', category: 'Trend' },
+    { name: 'MACD', description: 'Moving Average Convergence Divergence for momentum analysis', category: 'Momentum' },
+    { name: 'RSI7/14', description: 'Relative Strength Index for overbought/oversold detection', category: 'Momentum' },
+    { name: 'BOLL', description: 'Bollinger Bands for volatility and price extremes', category: 'Volatility' },
+    { name: 'ATR14', description: 'Average True Range for volatility measurement', category: 'Volatility' },
+  ]
 
   // Determine if user has premium subscription
   const isPremium = membership?.status === 'ACTIVE'
@@ -74,6 +76,23 @@ export default function PremiumFeaturesView({ onAccountUpdated }: PremiumFeature
 
   const handleUpgradeClick = () => {
     window.open('https://www.akooi.com/#pricing-section', '_blank')
+  }
+
+  const handlePromptToolClick = () => {
+    // Check if user is logged in
+    if (!user) {
+      toast.error('Please log in to use this feature')
+      return
+    }
+
+    // Check premium status
+    if (!isPremium) {
+      setShowPremiumModal(true)
+      return
+    }
+
+    // Premium user: navigate to prompt page
+    onPageChange?.('prompt-management')
   }
 
   const handleSaveConfiguration = async (section: string) => {
@@ -265,6 +284,44 @@ export default function PremiumFeaturesView({ onAccountUpdated }: PremiumFeature
                   </Button>
                 </CardContent>
               </Card>
+
+              {/* AI Prompt Generator */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="space-y-1">
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                      <Sparkles className="w-5 h-5 text-purple-500" />
+                      AI Prompt Generator
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Generate professional trading strategy prompts through natural language conversation with AI
+                    </CardDescription>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="space-y-2 p-3 bg-muted/50 rounded-lg text-xs">
+                    <div className="font-medium flex items-center gap-2">
+                      <Info className="w-3 h-3" />
+                      Key Features
+                    </div>
+                    <div className="space-y-0.5 text-muted-foreground ml-5">
+                      <div>• Natural language conversation interface</div>
+                      <div>• No template syntax knowledge required</div>
+                      <div>• Multi-turn dialogue for strategy refinement</div>
+                      <div>• Automatic variable selection and optimization</div>
+                      <div>• Version management for prompt iterations</div>
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={handlePromptToolClick}
+                    className="w-full h-8 text-xs bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0"
+                  >
+                    <Sparkles className="w-3 h-3 mr-1" />
+                    Start Write Strategy Prompt
+                  </Button>
+                </CardContent>
+              </Card>
             </div>
           </section>
 
@@ -277,76 +334,116 @@ export default function PremiumFeaturesView({ onAccountUpdated }: PremiumFeature
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {/* Advanced Indicators */}
-              <Card className="opacity-60">
+              <Card>
                 <CardHeader className="pb-3">
                   <div className="space-y-1">
                     <CardTitle className="flex items-center gap-2 text-lg">
-                      Advanced Indicators Package
-                      <Badge variant="outline" className="text-xs">Coming Soon</Badge>
+                      Technical Indicators Suite
+                      <Badge className="bg-green-500 text-white text-xs">Limited Time Free</Badge>
                     </CardTitle>
                     <CardDescription className="text-xs">
-                      7 advanced technical indicators for deeper market analysis
+                      11 professional-grade technical indicators across trend, momentum, and volatility analysis
                     </CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="space-y-2">
-                    {Object.entries(advancedIndicators).map(([key]) => (
-                      <div key={key} className="flex items-center justify-between p-2 border rounded-lg opacity-50">
+                    {technicalIndicators.map((indicator, index) => (
+                      <div key={index} className="flex items-start gap-2 p-2 border rounded-lg">
                         <div className="flex-1">
-                          <div className="text-xs font-medium capitalize">
-                            {key === 'rsi' ? 'RSI' : key === 'macd' ? 'MACD' : key === 'bollinger' ? 'Bollinger Bands' : key}
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold">{indicator.name}</span>
+                            <Badge variant="outline" className="text-[10px] px-1 py-0">{indicator.category}</Badge>
                           </div>
-                          <p className="text-xs text-muted-foreground">
-                            {key === 'momentum' && 'Momentum oscillator for trend strength'}
-                            {key === 'rsi' && 'Relative Strength Index for overbought/oversold'}
-                            {key === 'macd' && 'Moving Average Convergence Divergence'}
-                            {key === 'bollinger' && 'Volatility bands for price extremes'}
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {indicator.description}
                           </p>
                         </div>
                       </div>
                     ))}
                   </div>
 
+                  <div className="p-2 bg-muted/50 rounded-lg text-xs text-muted-foreground">
+                    <div className="font-medium mb-1">Multi-Period Support</div>
+                    <div>Available on 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 3d, 1w, 1M timeframes</div>
+                  </div>
+
                   <Button
-                    disabled
+                    onClick={() => onPageChange?.('klines')}
                     className="w-full h-8 text-xs"
                   >
-                    Coming Soon
+                    Try Now
                   </Button>
                 </CardContent>
               </Card>
 
-              {/* Multi-Timeframe Analysis */}
-              <Card className="opacity-60">
+              {/* AI K-line Analysis */}
+              <Card>
                 <CardHeader className="pb-3">
                   <div className="space-y-1">
                     <CardTitle className="flex items-center gap-2 text-lg">
-                      Multi-Timeframe Analysis
-                      <Badge variant="outline" className="text-xs">Coming Soon</Badge>
+                      AI Quantitative Analysis
+                      <Badge className="bg-green-500 text-white text-xs">Limited Time Free</Badge>
                     </CardTitle>
                     <CardDescription className="text-xs">
-                      Simultaneous monitoring of 6 timeframes from 1-minute to daily
+                      Deep learning-powered market microstructure analysis with multi-dimensional signal extraction
                     </CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg opacity-50">
-                    <div className="flex-1">
-                      <div className="text-xs font-medium">
-                        Enable Multi-Timeframe Analysis
+                  <div className="space-y-2">
+                    <div className="p-2 bg-muted/50 rounded-lg">
+                      <div className="text-xs font-semibold mb-1">Pattern Recognition Engine</div>
+                      <div className="text-xs text-muted-foreground">
+                        • Classical formations: Head & Shoulders, Double Top/Bottom, Triangles, Wedges
                       </div>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Available timeframes: 1m, 5m, 15m, 1h, 4h, 1d
-                      </p>
+                      <div className="text-xs text-muted-foreground">
+                        • Candlestick patterns: Doji, Engulfing, Hammer, Shooting Star, Morning/Evening Star
+                      </div>
+                    </div>
+
+                    <div className="p-2 bg-muted/50 rounded-lg">
+                      <div className="text-xs font-semibold mb-1">Multi-Timeframe Confluence Analysis</div>
+                      <div className="text-xs text-muted-foreground">
+                        • Cross-period trend alignment detection (1m to 1M)
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        • Support/Resistance level clustering across timeframes
+                      </div>
+                    </div>
+
+                    <div className="p-2 bg-muted/50 rounded-lg">
+                      <div className="text-xs font-semibold mb-1">Quantitative Signal Generation</div>
+                      <div className="text-xs text-muted-foreground">
+                        • Momentum divergence detection (price vs. indicator)
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        • Volume-price relationship analysis
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        • Market structure break identification
+                      </div>
+                    </div>
+
+                    <div className="p-2 bg-muted/50 rounded-lg">
+                      <div className="text-xs font-semibold mb-1">Actionable Trading Insights</div>
+                      <div className="text-xs text-muted-foreground">
+                        • Entry/Exit zone recommendations with probability scoring
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        • Risk/Reward ratio calculation and position sizing guidance
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        • Market regime classification (trending/ranging/volatile)
+                      </div>
                     </div>
                   </div>
 
                   <Button
-                    disabled
+                    onClick={() => onPageChange?.('klines')}
                     className="w-full h-8 text-xs"
                   >
-                    Coming Soon
+                    Launch Analysis
                   </Button>
                 </CardContent>
               </Card>
